@@ -150,15 +150,11 @@ the event cursor fields that created or last updated each row, including
 
 ## Reorg Rollback
 
-On a reorg message, rollback all chain-derived rows where:
+On a reorg message, roll back all chain-derived rows where:
 
 ```sql
 block_number >= starting_block_number
 ```
-
-For Summit, `adventurer_tokens` is chain-derived and should roll back by
-`first_seen_block_number`. `cartridge_names` is an external cache and should not
-roll back.
 
 After the caller handles the rollback, `streamEvents` resumes from the reorg
 starting block with HTTP backfill and then returns to WebSocket live indexing.
@@ -171,25 +167,11 @@ Phase 1 targets accepted L2 events by default:
 finalityStatus: "ACCEPTED_ON_L2"
 ```
 
-Summit currently uses Apibara `StarknetStream` with pending finality. The first
-migration should test accepted-only indexing unless pending support is added
-explicitly.
+This does not index pending or pre-confirmed events. Applications that require
+non-accepted events should add that support explicitly and validate the cursor
+and rollback behavior for those finality modes.
 
-## Summit Migration Notes
-
-Use `/workspace/summit/indexer` as the first local client after this package is
-linkable.
-
-Recommended migration steps:
-
-1. Replace `StarknetStream` event ingestion with `streamEvents`.
-2. Persist `(block_number, transaction_index, transaction_hash, event_index)`
-   atomically with each event-derived write.
-3. Add rollback handling for chain-derived tables on reorg messages.
-4. Keep external caches, including `cartridge_names`, outside the rollback path.
-5. Run Summit against accepted-only events first.
-6. Add pending or pre-confirmed support only after the accepted-only path is
-   verified.
+## Live Integration Tests
 
 Optional live integration tests should read URLs from:
 
