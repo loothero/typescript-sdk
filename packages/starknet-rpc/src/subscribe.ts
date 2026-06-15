@@ -1,17 +1,16 @@
+import { DEFAULT_SUBSCRIPTION_FINALITY_STATUS } from "./constants";
 import { compareEventCursor, cursorEquals, eventCursorKey } from "./cursor";
 import { normalizeFelt } from "./normalize";
 import type {
-  BlockId,
   EventCursor,
   EventSubscription,
   Felt,
-  FinalityStatus,
   StreamMessage,
   SubscribeEventsOptions,
+  SubscriptionBlockId,
 } from "./types";
 import { TooManyBlocksBackError, connectSubscribeEvents } from "./ws";
 
-const DEFAULT_FINALITY_STATUS: FinalityStatus = "PRE_CONFIRMED";
 const DEFAULT_MIN_RECONNECT_DELAY_MS = 500;
 const DEFAULT_MAX_RECONNECT_DELAY_MS = 10_000;
 const MAX_REMEMBERED_CURSOR_KEYS = 2_048;
@@ -163,11 +162,12 @@ function normalizeSubscribeOptions(
     blockId: options.blockId ? normalizeBlockId(options.blockId) : undefined,
     addresses: normalizeFelts(options.addresses),
     keys: options.keys?.map((keys) => normalizeFelts(keys) ?? []),
-    finalityStatus: options.finalityStatus ?? DEFAULT_FINALITY_STATUS,
+    finalityStatus:
+      options.finalityStatus ?? DEFAULT_SUBSCRIPTION_FINALITY_STATUS,
   };
 }
 
-function initialBlockId(options: SubscribeEventsOptions): BlockId {
+function initialBlockId(options: SubscribeEventsOptions): SubscriptionBlockId {
   if (options.blockId) {
     return options.blockId;
   }
@@ -179,9 +179,15 @@ function initialBlockId(options: SubscribeEventsOptions): BlockId {
   return "latest";
 }
 
-function normalizeBlockId(blockId: BlockId): BlockId {
+function normalizeBlockId(blockId: SubscriptionBlockId): SubscriptionBlockId {
   if (typeof blockId === "string") {
-    return blockId;
+    if (blockId !== "latest") {
+      throw new Error(
+        `Invalid starknet_subscribeEvents blockId tag "${blockId}". Use "latest", block_number, or block_hash.`,
+      );
+    }
+
+    return "latest";
   }
 
   if ("block_hash" in blockId) {

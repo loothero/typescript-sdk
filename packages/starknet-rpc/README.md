@@ -16,6 +16,10 @@ It does not use the Apibara DNA runtime as a block cache.
 Use Starknet JSON-RPC v0.10 or newer endpoints, for example URLs ending in
 `/rpc/v0_10` and `/ws/rpc/v0_10`.
 
+The package targets modern Node.js runtimes with global `fetch` support. It
+ships a default WebSocket client for Node environments, and callers can still
+provide `webSocketFactory` when they need a custom transport.
+
 This package relies on `block_number`, `transaction_index`, and `event_index`
 from emitted events for duplicate-safe cursoring. Older RPC versions do not
 include all of these fields. Pre-confirmed live indexing also requires a node

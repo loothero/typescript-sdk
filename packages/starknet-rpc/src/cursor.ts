@@ -14,19 +14,6 @@ export function compareEventCursor(a: EventCursor, b: EventCursor): number {
     return a.eventIndex < b.eventIndex ? -1 : 1;
   }
 
-  const aTransactionHash = normalizeFelt(
-    a.transactionHash,
-    "cursor.transactionHash",
-  );
-  const bTransactionHash = normalizeFelt(
-    b.transactionHash,
-    "cursor.transactionHash",
-  );
-
-  if (aTransactionHash !== bTransactionHash) {
-    return aTransactionHash < bTransactionHash ? -1 : 1;
-  }
-
   return 0;
 }
 

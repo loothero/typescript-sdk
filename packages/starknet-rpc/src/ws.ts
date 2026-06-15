@@ -1,17 +1,18 @@
+import WebSocketImpl from "ws";
+import { DEFAULT_SUBSCRIPTION_FINALITY_STATUS } from "./constants";
 import { normalizeEvent, normalizeFelt, normalizeReorg } from "./normalize";
 import type {
-  BlockId,
   Felt,
-  FinalityStatus,
   RpcEvent,
   RpcReorg,
   RpcWebSocket,
   StreamMessage,
   SubscribeEventsOptions,
+  SubscriptionBlockId,
+  SubscriptionFinalityStatus,
   WebSocketFactory,
 } from "./types";
 
-const DEFAULT_FINALITY_STATUS: FinalityStatus = "PRE_CONFIRMED";
 const TOO_MANY_BLOCKS_BACK_CODE = 68;
 const SUBSCRIBE_METHOD = "starknet_subscribeEvents";
 const EVENT_NOTIFICATION = "starknet_subscriptionEvents";
@@ -158,24 +159,22 @@ function createWebSocket(
     }
   ).WebSocket;
 
-  if (!WebSocketCtor) {
-    throw new Error(
-      "No WebSocket implementation available. Pass webSocketFactory in SubscribeEventsOptions.",
-    );
-  }
-
-  return new WebSocketCtor(url);
+  return WebSocketCtor
+    ? new WebSocketCtor(url)
+    : (new WebSocketImpl(url) as unknown as RpcWebSocket);
 }
 
 function buildSubscribeParams(options: SubscribeEventsOptions) {
   const params: {
-    block_id: BlockId;
+    block_id: SubscriptionBlockId;
     from_address?: Felt | Felt[];
     keys?: Felt[][];
-    finality_status: FinalityStatus;
+    finality_status: SubscriptionFinalityStatus;
   } = {
     block_id: normalizeBlockId(options.blockId ?? "latest"),
-    finality_status: options.finalityStatus ?? DEFAULT_FINALITY_STATUS,
+    finality_status: normalizeFinalityStatus(
+      options.finalityStatus ?? DEFAULT_SUBSCRIPTION_FINALITY_STATUS,
+    ),
   };
 
   const fromAddress = normalizeAddresses(options.addresses);
@@ -192,9 +191,15 @@ function buildSubscribeParams(options: SubscribeEventsOptions) {
   return params;
 }
 
-function normalizeBlockId(blockId: BlockId): BlockId {
+function normalizeBlockId(blockId: SubscriptionBlockId): SubscriptionBlockId {
   if (typeof blockId === "string") {
-    return blockId;
+    if (blockId !== "latest") {
+      throw new Error(
+        `Invalid starknet_subscribeEvents blockId tag "${blockId}". Use "latest", block_number, or block_hash.`,
+      );
+    }
+
+    return "latest";
   }
 
   if ("block_hash" in blockId) {
@@ -202,6 +207,21 @@ function normalizeBlockId(blockId: BlockId): BlockId {
   }
 
   return blockId;
+}
+
+function normalizeFinalityStatus(
+  finalityStatus: SubscriptionFinalityStatus,
+): SubscriptionFinalityStatus {
+  if (
+    finalityStatus !== "ACCEPTED_ON_L2" &&
+    finalityStatus !== "PRE_CONFIRMED"
+  ) {
+    throw new Error(
+      `Invalid starknet_subscribeEvents finalityStatus "${finalityStatus}". Use "ACCEPTED_ON_L2" or "PRE_CONFIRMED".`,
+    );
+  }
+
+  return finalityStatus;
 }
 
 function normalizeAddresses(addresses?: Felt[]): Felt | Felt[] | undefined {

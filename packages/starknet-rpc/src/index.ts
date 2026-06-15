@@ -49,6 +49,8 @@ export type {
   RpcWebSocket,
   StreamEventsOptions,
   StreamMessage,
+  SubscriptionBlockId,
+  SubscriptionFinalityStatus,
   SubscribeEventsOptions,
   SubscribeReconnectOptions,
   WebSocketFactory,

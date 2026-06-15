@@ -11,10 +11,21 @@ export type BlockId =
       block_hash: Felt;
     };
 
+export type SubscriptionBlockId =
+  | "latest"
+  | {
+      block_number: number;
+    }
+  | {
+      block_hash: Felt;
+    };
+
 export type FinalityStatus =
   | "ACCEPTED_ON_L2"
   | "ACCEPTED_ON_L1"
   | "PRE_CONFIRMED";
+
+export type SubscriptionFinalityStatus = "ACCEPTED_ON_L2" | "PRE_CONFIRMED";
 
 export interface EventCursor {
   blockNumber: number;
@@ -105,10 +116,10 @@ export interface BackfillEventsOptions extends EventFilter {
 
 export interface SubscribeEventsOptions {
   url: string;
-  blockId?: BlockId;
+  blockId?: SubscriptionBlockId;
   addresses?: Felt[];
   keys?: Felt[][];
-  finalityStatus?: FinalityStatus;
+  finalityStatus?: SubscriptionFinalityStatus;
   cursor?: EventCursor;
   reconnect?: boolean | SubscribeReconnectOptions;
   signal?: AbortSignal;
@@ -130,7 +141,7 @@ export interface StreamEventsOptions extends Omit<EventFilter, "toBlock"> {
   wsUrl: string;
   cursor?: EventCursor;
   /** Applies to the live WebSocket subscription. Historical backfill uses accepted events. */
-  finalityStatus?: FinalityStatus;
+  finalityStatus?: SubscriptionFinalityStatus;
   signal?: AbortSignal;
   webSocketFactory?: WebSocketFactory;
 }

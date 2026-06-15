@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { backfillEvents } from "../src/backfill";
-import { getBlockWithTxHashes } from "../src/block-cache";
+import { StarknetBlockCache, getBlockWithTxHashes } from "../src/block-cache";
 import { compareEventCursor, eventCursorKey } from "../src/cursor";
 import { getEvents } from "../src/http";
 import { normalizeEvent, normalizeFelt } from "../src/normalize";
@@ -37,13 +37,53 @@ describe("cursor comparison", () => {
     ).toBeGreaterThan(0);
     expect(
       compareEventCursor(cursor(2, "0x2", 1, 0), cursor(2, "0x1", 1, 0)),
-    ).toBeGreaterThan(0);
+    ).toBe(0);
   });
 
   it("keeps the cursor identity keyed by transaction hash and event index", () => {
     expect(eventCursorKey(cursor(5, "0xabc", 1, 2))).toBe(
       eventCursorKey(cursor(5, "0x0abc", 99, 2)),
     );
+  });
+});
+
+describe("block cache", () => {
+  it("caches blocks by number and hash and invalidates from a reorg start", async () => {
+    const requests: unknown[] = [];
+    mockRpcFetch((request) => {
+      requests.push(request);
+      return {
+        block_hash: "0xabc",
+        block_number: 10,
+        timestamp: 100,
+        transactions: [],
+      };
+    });
+
+    const cache = new StarknetBlockCache({ url: RPC_URL });
+
+    await expect(
+      cache.getBlockWithTxHashes({ block_number: 10 }),
+    ).resolves.toMatchObject({
+      block_number: 10,
+    });
+    await expect(
+      cache.getBlockWithTxHashes({ block_number: 10 }),
+    ).resolves.toMatchObject({
+      block_number: 10,
+    });
+    expect(requests).toHaveLength(1);
+    expect(
+      cache.getCachedMetadata({ block_hash: normalizeFelt("0xabc") }),
+    ).toMatchObject({
+      blockNumber: 10,
+      timestamp: 100,
+    });
+
+    cache.invalidateFrom(10);
+
+    await cache.getBlockWithTxHashes({ block_number: 10 });
+    expect(requests).toHaveLength(2);
   });
 });
 
@@ -452,6 +492,38 @@ describe("WebSocket subscriptions", () => {
 
     await expect(next).rejects.toBeInstanceOf(TooManyBlocksBackError);
     expect(socket.sent).toHaveLength(1);
+  });
+
+  it("rejects subscription-only block tags before sending", async () => {
+    const sockets: MockWebSocket[] = [];
+    const iterator = connectSubscribeEvents({
+      url: WS_URL,
+      blockId: "pending",
+      webSocketFactory: mockWebSocketFactory(sockets),
+    } as never);
+
+    const next = iterator.next();
+    const socket = await waitForSocket(sockets, 0);
+    socket.open();
+
+    await expect(next).rejects.toThrow(/blockId tag/);
+    expect(socket.sent).toHaveLength(0);
+  });
+
+  it("rejects unsupported subscription finality statuses before sending", async () => {
+    const sockets: MockWebSocket[] = [];
+    const iterator = connectSubscribeEvents({
+      url: WS_URL,
+      finalityStatus: "ACCEPTED_ON_L1",
+      webSocketFactory: mockWebSocketFactory(sockets),
+    } as never);
+
+    const next = iterator.next();
+    const socket = await waitForSocket(sockets, 0);
+    socket.open();
+
+    await expect(next).rejects.toThrow(/finalityStatus/);
+    expect(socket.sent).toHaveLength(0);
   });
 });
 
