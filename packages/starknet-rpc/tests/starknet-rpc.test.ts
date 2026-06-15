@@ -60,7 +60,7 @@ describe("event normalization", () => {
       rawEvent();
 
     expect(() => normalizeEvent(missingTransactionIndex)).toThrow(
-      /event\.transaction_index/,
+      /Starknet JSON-RPC >= 0\.10/,
     );
   });
 });

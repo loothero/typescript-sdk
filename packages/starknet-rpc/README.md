@@ -11,6 +11,17 @@ This package is the phase 1 RPC path for Starknet indexing. It uses:
 
 It does not use the Apibara DNA runtime as a block cache.
 
+## Requirements
+
+Use Starknet JSON-RPC v0.10 or newer endpoints, for example URLs ending in
+`/rpc/v0_10` and `/ws/rpc/v0_10`.
+
+This package relies on `block_number`, `transaction_index`, and `event_index`
+from emitted events for duplicate-safe cursoring. Older RPC versions do not
+include all of these fields. Pre-confirmed live indexing also requires a node
+that includes those cursor fields in `starknet_subscribeEvents` notifications.
+Pathfinder v0.10 provides them.
+
 ## Backfill
 
 ```ts

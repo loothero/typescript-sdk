@@ -9,6 +9,8 @@ import type {
 } from "./types";
 
 const FELT_HEX_LENGTH = 64;
+const EVENT_CURSOR_FIELD_REQUIREMENT =
+  "This package requires Starknet JSON-RPC >= 0.10 event cursor fields: block_number, transaction_index, and event_index.";
 
 export function normalizeFelt(value: Felt, field = "felt"): Felt {
   if (typeof value !== "string") {
@@ -40,6 +42,7 @@ export function normalizeEvent(raw: RpcEvent): NormalizedEvent {
   const blockNumber = requiredNonNegativeInteger(
     raw.block_number,
     "event.block_number",
+    EVENT_CURSOR_FIELD_REQUIREMENT,
   );
   const transactionHash = normalizeFelt(
     requiredFelt(raw.transaction_hash, "event.transaction_hash"),
@@ -48,10 +51,12 @@ export function normalizeEvent(raw: RpcEvent): NormalizedEvent {
   const eventIndex = requiredNonNegativeInteger(
     raw.event_index,
     "event.event_index",
+    EVENT_CURSOR_FIELD_REQUIREMENT,
   );
   const transactionIndex = requiredNonNegativeInteger(
     raw.transaction_index,
     "event.transaction_index",
+    EVENT_CURSOR_FIELD_REQUIREMENT,
   );
 
   const blockHash =
@@ -178,9 +183,17 @@ function requiredFeltArray(value: unknown, field: string): Felt[] {
   );
 }
 
-function requiredNonNegativeInteger(value: unknown, field: string): number {
+function requiredNonNegativeInteger(
+  value: unknown,
+  field: string,
+  requirement?: string,
+): number {
   if (typeof value !== "number" || !Number.isInteger(value) || value < 0) {
-    throw new Error(`${field} is required and must be a non-negative integer`);
+    throw new Error(
+      `${field} is required and must be a non-negative integer${
+        requirement ? `. ${requirement}` : ""
+      }`,
+    );
   }
 
   return value;
