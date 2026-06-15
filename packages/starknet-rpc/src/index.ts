@@ -7,7 +7,9 @@ export { backfillEvents } from "./backfill";
 export {
   compareEventCursor,
   cursorEquals,
+  cursorBeforeBlock,
   eventCursorKey,
+  isCursorBeforeBlock,
 } from "./cursor";
 export {
   StarknetRpcError,

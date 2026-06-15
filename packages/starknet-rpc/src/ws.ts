@@ -1,5 +1,6 @@
 import WebSocketImpl from "ws";
 import { DEFAULT_SUBSCRIPTION_FINALITY_STATUS } from "./constants";
+import { cursorBeforeBlock } from "./cursor";
 import { normalizeEvent, normalizeFelt, normalizeReorg } from "./normalize";
 import type {
   Felt,
@@ -344,9 +345,11 @@ function parseNotification(
     return { type: "event", event, cursor: event.cursor };
   }
 
+  const reorg = normalizeReorg(result as unknown as RpcReorg);
   return {
     type: "reorg",
-    reorg: normalizeReorg(result as unknown as RpcReorg),
+    reorg,
+    rollbackCursor: cursorBeforeBlock(reorg.startingBlockNumber),
   };
 }
 

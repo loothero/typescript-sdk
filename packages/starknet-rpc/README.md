@@ -51,6 +51,8 @@ for await (const message of backfillEvents({
 
 `cursor` means "last successfully persisted event". When a cursor is supplied,
 the backfill starts from that block and skips events at or before the cursor.
+Reorg handling should persist `message.rollbackCursor`; that cursor sorts before
+the first event in the rollback block.
 
 ## Live Subscription
 
@@ -67,7 +69,10 @@ const subscription = subscribeEvents({
 try {
   for await (const message of subscription) {
     if (message.type === "reorg") {
-      await rollbackFrom(message.reorg.startingBlockNumber);
+      await db.transaction(async (tx) => {
+        await rollbackFrom(tx, message.reorg.startingBlockNumber);
+        await saveCursor(tx, message.rollbackCursor);
+      });
       continue;
     }
 
@@ -96,7 +101,10 @@ for await (const message of streamEvents({
   keys: [["0xabcdef"]],
 })) {
   if (message.type === "reorg") {
-    await rollbackFrom(message.reorg.startingBlockNumber);
+    await db.transaction(async (tx) => {
+      await rollbackFrom(tx, message.reorg.startingBlockNumber);
+      await saveCursor(tx, message.rollbackCursor);
+    });
     continue;
   }
 
@@ -181,8 +189,26 @@ On a reorg message, roll back all chain-derived rows where:
 block_number >= starting_block_number
 ```
 
+Update the persisted cursor to `message.rollbackCursor` in the same transaction
+as the chain-row rollback:
+
+```ts
+await db.transaction(async (tx) => {
+  await tx.sql`
+    delete from indexed_events
+    where block_number >= ${message.reorg.startingBlockNumber}
+  `;
+
+  await saveCursor(tx, message.rollbackCursor);
+});
+```
+
 After the caller handles the rollback, `streamEvents` resumes from the reorg
 starting block with HTTP backfill and then returns to WebSocket live indexing.
+If a process restarts with a persisted pre-confirmed cursor beyond the current
+accepted head, `streamEvents` emits a synthetic reorg message and resets its
+dedupe state to `message.rollbackCursor` before subscribing live. This prevents
+replacement events at the same cursor ordering from being skipped.
 
 ## Finality
 

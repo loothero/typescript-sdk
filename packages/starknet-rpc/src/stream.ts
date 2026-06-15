@@ -1,6 +1,10 @@
 import { backfillEvents } from "./backfill";
 import { StarknetBlockCache } from "./block-cache";
-import { compareEventCursor } from "./cursor";
+import {
+  compareEventCursor,
+  cursorBeforeBlock,
+  isCursorBeforeBlock,
+} from "./cursor";
 import { StarknetTransportError } from "./http";
 import { subscribeEvents } from "./subscribe";
 import type {
@@ -15,6 +19,7 @@ import { TooManyBlocksBackError } from "./ws";
 
 const DEFAULT_HTTP_RETRY_DELAY_MS = 500;
 const MAX_HTTP_RETRY_DELAY_MS = 10_000;
+const ZERO_FELT = `0x${"0".repeat(64)}`;
 
 export async function* streamEvents(
   options: StreamEventsOptions,
@@ -27,7 +32,9 @@ export async function* streamEvents(
   });
 
   let lastYieldedCursor = options.cursor;
-  let lastRealCursor = options.cursor;
+  let lastRealCursor = isRollbackCursor(options.cursor)
+    ? undefined
+    : options.cursor;
   let backfillFromBlock = options.fromBlock;
   let backfillCursor = options.cursor;
   let lastBackfilledBlockNumber = options.cursor?.blockNumber;
@@ -43,31 +50,54 @@ export async function* streamEvents(
       try {
         const head = await blockCache.getLatestBlock();
         headBlockId = { block_number: head.blockNumber };
+        const cursorForBackfill = backfillCursor;
+        const cursorPastAcceptedHead =
+          cursorForBackfill !== undefined &&
+          cursorForBackfill.blockNumber > head.blockNumber;
 
-        for await (const message of backfillEvents({
-          url: options.url,
-          fromBlock: backfillFromBlock,
-          toBlock: headBlockId,
-          addresses: options.addresses,
-          keys: options.keys,
-          chunkSize: options.chunkSize,
-          cursor: backfillCursor,
-          signal: options.signal,
-        })) {
-          if (message.type === "event") {
-            if (!shouldYieldEvent(message.cursor, lastYieldedCursor)) {
-              continue;
+        if (cursorPastAcceptedHead) {
+          const startingBlockNumber = head.blockNumber + 1;
+          const endingBlockNumber = cursorForBackfill.blockNumber;
+          const shouldEmitRollback =
+            !isRollbackCursor(cursorForBackfill) ||
+            cursorForBackfill.blockNumber > startingBlockNumber;
+
+          lastYieldedCursor = cursorBeforeBlock(startingBlockNumber);
+          lastRealCursor = undefined;
+          backfillCursor = undefined;
+          lastBackfilledBlockNumber = head.blockNumber;
+          blockCache.invalidateFrom(startingBlockNumber);
+          httpRetryAttempt = 0;
+
+          if (shouldEmitRollback) {
+            yield syntheticReorgMessage(startingBlockNumber, endingBlockNumber);
+          }
+        } else {
+          for await (const message of backfillEvents({
+            url: options.url,
+            fromBlock: backfillFromBlock,
+            toBlock: headBlockId,
+            addresses: options.addresses,
+            keys: options.keys,
+            chunkSize: options.chunkSize,
+            cursor: backfillCursor,
+            signal: options.signal,
+          })) {
+            if (message.type === "event") {
+              if (!shouldYieldEvent(message.cursor, lastYieldedCursor)) {
+                continue;
+              }
+
+              lastYieldedCursor = message.cursor;
+              lastRealCursor = message.cursor;
             }
 
-            lastYieldedCursor = message.cursor;
-            lastRealCursor = message.cursor;
+            yield message;
           }
 
-          yield message;
+          lastBackfilledBlockNumber = head.blockNumber;
+          httpRetryAttempt = 0;
         }
-
-        lastBackfilledBlockNumber = head.blockNumber;
-        httpRetryAttempt = 0;
       } catch (error) {
         if (!isRetryableHttpError(error, options.signal)) {
           throw error;
@@ -142,14 +172,20 @@ export async function* streamEvents(
       }
 
       const startingBlockNumber = reorg.reorg.startingBlockNumber;
+      const rollbackCursor =
+        reorg.rollbackCursor ?? cursorBeforeBlock(startingBlockNumber);
+      const rollbackMessage: ReorgMessage = {
+        ...reorg,
+        rollbackCursor,
+      };
       blockCache.invalidateFrom(startingBlockNumber);
-      lastYieldedCursor = cursorBeforeBlock(startingBlockNumber);
+      lastYieldedCursor = rollbackCursor;
       lastRealCursor = undefined;
       lastBackfilledBlockNumber = undefined;
       backfillFromBlock = { block_number: startingBlockNumber };
       backfillCursor = undefined;
 
-      yield reorg;
+      yield rollbackMessage;
     }
   } finally {
     if (subscription) {
@@ -193,20 +229,39 @@ function shouldYieldEvent(
   );
 }
 
-function cursorBeforeBlock(blockNumber: number): EventCursor {
-  // Synthetic in-memory cursor used only for local dedupe after a rollback.
-  return {
-    blockNumber,
-    transactionIndex: -1,
-    transactionHash: "0x0",
-    eventIndex: -1,
-  };
-}
-
 function throwIfAborted(signal: AbortSignal | undefined): void {
   if (signal?.aborted) {
     throw signal.reason ?? new Error("The operation was aborted.");
   }
+}
+
+function isRollbackCursor(cursor: EventCursor | undefined): boolean {
+  return cursor !== undefined && isCursorBeforeBlock(cursor);
+}
+
+function syntheticReorgMessage(
+  startingBlockNumber: number,
+  endingBlockNumber: number,
+): ReorgMessage {
+  const raw = {
+    starting_block_number: startingBlockNumber,
+    starting_block_hash: "0x0",
+    ending_block_number: endingBlockNumber,
+    ending_block_hash: "0x0",
+  };
+
+  return {
+    type: "reorg",
+    reorg: {
+      startingBlockNumber,
+      startingBlockHash: ZERO_FELT,
+      endingBlockNumber,
+      endingBlockHash: ZERO_FELT,
+      synthetic: true,
+      raw,
+    },
+    rollbackCursor: cursorBeforeBlock(startingBlockNumber),
+  };
 }
 
 function rejectUnsupportedOptions(options: StreamEventsOptions): void {

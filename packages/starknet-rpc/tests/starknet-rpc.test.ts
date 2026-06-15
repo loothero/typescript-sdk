@@ -381,6 +381,12 @@ describe("WebSocket subscriptions", () => {
           endingBlockNumber: 13,
           endingBlockHash: normalizeFelt("0xdef"),
         },
+        rollbackCursor: {
+          blockNumber: 12,
+          transactionIndex: -1,
+          transactionHash: "0x0",
+          eventIndex: -1,
+        },
       },
     });
 
@@ -754,6 +760,92 @@ describe("combined stream", () => {
         chunk_size: 100,
       },
     ]);
+
+    await iterator.return?.(undefined);
+  });
+
+  it("rolls back a persisted pre-confirmed cursor ahead of accepted head before live resume", async () => {
+    const sockets: MockWebSocket[] = [];
+    const methods: string[] = [];
+
+    mockRpcFetch((request) => {
+      methods.push(request.method);
+
+      if (request.method === "starknet_getBlockWithTxHashes") {
+        return {
+          block_hash: "0x10",
+          block_number: 10,
+          timestamp: 110,
+          transactions: [],
+        };
+      }
+
+      if (request.method === "starknet_getEvents") {
+        throw new Error("streamEvents should not query an invalid HTTP range");
+      }
+
+      throw new Error(`unexpected method ${request.method}`);
+    });
+
+    const iterator = streamEvents({
+      url: RPC_URL,
+      wsUrl: WS_URL,
+      cursor: cursor(11, "0xaaa", 4, 2),
+      webSocketFactory: mockWebSocketFactory(sockets),
+    });
+
+    await expect(iterator.next()).resolves.toMatchObject({
+      done: false,
+      value: {
+        type: "reorg",
+        reorg: {
+          startingBlockNumber: 11,
+          endingBlockNumber: 11,
+          synthetic: true,
+        },
+        rollbackCursor: {
+          blockNumber: 11,
+          transactionIndex: -1,
+          transactionHash: "0x0",
+          eventIndex: -1,
+        },
+      },
+    });
+    expect(methods).toEqual(["starknet_getBlockWithTxHashes"]);
+
+    const live = iterator.next();
+    const socket = await waitForSocket(sockets, 0);
+    socket.open();
+    const subscribe = await waitForSent(socket, "starknet_subscribeEvents");
+    expect((subscribe.params as { block_id: unknown }).block_id).toEqual({
+      block_number: 10,
+    });
+    socket.message({ jsonrpc: "2.0", id: 1, result: "sub-1" });
+    socket.message(
+      eventNotification(
+        "sub-1",
+        rawEvent({
+          blockNumber: 11,
+          transactionHash: "0xbbb",
+          transactionIndex: 4,
+          eventIndex: 2,
+          finalityStatus: "PRE_CONFIRMED",
+        }),
+      ),
+    );
+
+    await expect(live).resolves.toMatchObject({
+      done: false,
+      value: {
+        type: "event",
+        cursor: {
+          blockNumber: 11,
+          transactionIndex: 4,
+          transactionHash: normalizeFelt("0xbbb"),
+          eventIndex: 2,
+        },
+      },
+    });
 
     await iterator.return?.(undefined);
   });

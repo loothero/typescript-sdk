@@ -28,3 +28,16 @@ export function eventCursorKey(cursor: EventCursor): string {
     cursor.eventIndex,
   ].join(":");
 }
+
+export function cursorBeforeBlock(blockNumber: number): EventCursor {
+  return {
+    blockNumber,
+    transactionIndex: -1,
+    transactionHash: "0x0",
+    eventIndex: -1,
+  };
+}
+
+export function isCursorBeforeBlock(cursor: EventCursor): boolean {
+  return cursor.transactionIndex < 0 || cursor.eventIndex < 0;
+}

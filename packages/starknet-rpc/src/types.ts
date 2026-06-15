@@ -1,6 +1,6 @@
 export type Felt = string;
 
-export type BlockTag = "latest" | "pending" | "l1_accepted" | "pre_confirmed";
+export type BlockTag = "latest" | "l1_accepted" | "pre_confirmed";
 
 export type BlockId =
   | BlockTag
@@ -72,6 +72,7 @@ export interface NormalizedReorg {
   startingBlockHash: Felt;
   endingBlockNumber: number;
   endingBlockHash: Felt;
+  synthetic?: boolean;
   raw: RpcReorg;
 }
 
@@ -84,6 +85,7 @@ export type EventMessage = {
 export type ReorgMessage = {
   type: "reorg";
   reorg: NormalizedReorg;
+  rollbackCursor: EventCursor;
 };
 
 export type StreamMessage = EventMessage | ReorgMessage;
