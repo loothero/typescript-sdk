@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { backfillEvents } from "./backfill";
+import { getBlockWithTxHashes } from "./block-cache";
 import { compareEventCursor } from "./cursor";
+import { getEvents } from "./http";
 import { normalizeFelt } from "./normalize";
 import { streamEvents } from "./stream";
 import { subscribeEvents } from "./subscribe";
@@ -46,7 +48,7 @@ describe("HTTP backfill", () => {
         throw new Error(`unexpected method ${request.method}`);
       }
 
-      if (!request.params.filter.continuation_token) {
+      if (!singleParam(request).continuation_token) {
         return {
           events: [
             rawEvent({ blockNumber: 1, transactionHash: "0x1", eventIndex: 0 }),
@@ -76,22 +78,80 @@ describe("HTTP backfill", () => {
       1, 1, 2,
     ]);
     expect(requests).toHaveLength(2);
+    expect((requests[0] as JsonRpcRequest).params).toEqual([
+      {
+        from_block: { block_number: 1 },
+        to_block: { block_number: 2 },
+        chunk_size: 2,
+      },
+    ]);
+    expect((requests[1] as JsonRpcRequest).params).toEqual([
+      {
+        from_block: { block_number: 1 },
+        to_block: { block_number: 2 },
+        chunk_size: 2,
+        continuation_token: "page-2",
+      },
+    ]);
+  });
+
+  it("sends getEvents filters as positional JSON-RPC params", async () => {
+    const requests: unknown[] = [];
+    mockRpcFetch((request) => {
+      requests.push(request);
+      return { events: [] };
+    });
+
+    await getEvents({
+      url: RPC_URL,
+      fromBlock: { block_number: 1 },
+      toBlock: { block_number: 2 },
+      addresses: ["0xaaa"],
+      keys: [["0x111"]],
+      chunkSize: 25,
+      continuationToken: "page-2",
+    });
+
+    expect(requests).toHaveLength(1);
     expect(requests[0]).toMatchObject({
-      params: {
-        filter: {
-          from_block: { block_number: 1 },
-          to_block: { block_number: 2 },
-          chunk_size: 2,
-        },
-      },
+      method: "starknet_getEvents",
     });
-    expect(requests[1]).toMatchObject({
-      params: {
-        filter: {
-          continuation_token: "page-2",
-        },
+    expect((requests[0] as JsonRpcRequest).params).toEqual([
+      {
+        from_block: { block_number: 1 },
+        to_block: { block_number: 2 },
+        address: normalizeFelt("0xaaa"),
+        keys: [[normalizeFelt("0x111")]],
+        chunk_size: 25,
+        continuation_token: "page-2",
       },
+    ]);
+  });
+
+  it("sends getBlockWithTxHashes block ids as positional JSON-RPC params", async () => {
+    const requests: unknown[] = [];
+    mockRpcFetch((request) => {
+      requests.push(request);
+      return {
+        block_hash: "0x123",
+        block_number: 10,
+        timestamp: 100,
+        transactions: [],
+      };
     });
+
+    await getBlockWithTxHashes({
+      url: RPC_URL,
+      blockId: { block_number: 10 },
+    });
+
+    expect(requests).toHaveLength(1);
+    expect(requests[0]).toMatchObject({
+      method: "starknet_getBlockWithTxHashes",
+    });
+    expect((requests[0] as JsonRpcRequest).params).toEqual([
+      { block_number: 10 },
+    ]);
   });
 
   it("resumes from a persisted cursor and skips replayed events", async () => {
@@ -124,15 +184,14 @@ describe("HTTP backfill", () => {
       transactionHash: normalizeFelt("0x3"),
       eventIndex: 0,
     });
-    expect(requests[0]).toMatchObject({
-      params: {
-        filter: {
-          from_block: { block_number: 5 },
-        },
+    expect((requests[0] as JsonRpcRequest).params).toEqual([
+      {
+        from_block: { block_number: 5 },
+        chunk_size: 100,
       },
-    });
+    ]);
     expect(
-      (requests[0] as JsonRpcRequest).params.filter.continuation_token,
+      singleParam(requests[0] as JsonRpcRequest).continuation_token,
     ).toBeUndefined();
   });
 });
@@ -337,11 +396,22 @@ describe("combined stream", () => {
 
 type JsonRpcRequest = {
   method: string;
-  params: {
-    filter: Record<string, unknown>;
-    [key: string]: unknown;
-  };
+  params: unknown;
 };
+
+function singleParam(request: JsonRpcRequest): Record<string, unknown> {
+  const params = request.params;
+  if (!Array.isArray(params) || params.length !== 1) {
+    throw new Error("expected one positional JSON-RPC param");
+  }
+
+  const [param] = params;
+  if (typeof param !== "object" || param === null || Array.isArray(param)) {
+    throw new Error("expected positional JSON-RPC param object");
+  }
+
+  return param as Record<string, unknown>;
+}
 
 function cursor(
   blockNumber: number,

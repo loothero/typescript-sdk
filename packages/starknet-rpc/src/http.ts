@@ -33,15 +33,13 @@ interface JsonRpcResponse<T> {
   error?: JsonRpcErrorPayload;
 }
 
-interface StarknetGetEventsParams {
-  filter: {
-    from_block?: GetEventsOptions["fromBlock"];
-    to_block?: GetEventsOptions["toBlock"];
-    address?: Felt | Felt[];
-    keys?: Felt[][];
-    chunk_size?: number;
-    continuation_token?: string;
-  };
+interface StarknetGetEventsFilter {
+  from_block?: GetEventsOptions["fromBlock"];
+  to_block?: GetEventsOptions["toBlock"];
+  address?: Felt | Felt[];
+  keys?: Felt[][];
+  chunk_size?: number;
+  continuation_token?: string;
 }
 
 interface StarknetGetEventsResult {
@@ -214,7 +212,7 @@ export async function getEvents(
   const result = await jsonRpc<StarknetGetEventsResult>({
     url: options.url,
     method: "starknet_getEvents",
-    params,
+    params: [params],
     signal: options.signal,
   });
 
@@ -247,8 +245,8 @@ function buildGetEventsParams(
   options: GetEventsOptions,
   addresses: Felt[] | undefined,
   keys: Felt[][] | undefined,
-): StarknetGetEventsParams {
-  const filter: StarknetGetEventsParams["filter"] = {};
+): StarknetGetEventsFilter {
+  const filter: StarknetGetEventsFilter = {};
 
   if (options.fromBlock !== undefined) {
     filter.from_block = options.fromBlock;
@@ -274,7 +272,7 @@ function buildGetEventsParams(
     filter.continuation_token = options.continuationToken;
   }
 
-  return { filter };
+  return filter;
 }
 
 function normalizeFelts(values: Felt[] | undefined): Felt[] | undefined {

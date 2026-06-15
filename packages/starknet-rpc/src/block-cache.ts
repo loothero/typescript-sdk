@@ -126,7 +126,7 @@ export async function getBlockWithTxHashes(
   return callJsonRpc<StarknetBlockWithTxHashes>({
     url: options.url,
     method: "starknet_getBlockWithTxHashes",
-    params: { block_id: blockId ?? options.blockId ?? "latest" },
+    params: [blockId ?? options.blockId ?? "latest"],
     signal: options.signal,
   });
 }
