@@ -1,5 +1,6 @@
 import { backfillEvents } from "./backfill";
 import { StarknetBlockCache } from "./block-cache";
+import { DEFAULT_SUBSCRIPTION_FINALITY_STATUS } from "./constants";
 import {
   compareEventCursor,
   cursorBeforeBlock,
@@ -40,6 +41,7 @@ export async function* streamEvents(
   let lastBackfilledBlockNumber = options.cursor?.blockNumber;
   let httpRetryAttempt = 0;
   let subscription: EventSubscription | undefined;
+  let initialCursorRollbackPending = shouldReplayInitialCursorBlock(options);
 
   try {
     while (true) {
@@ -51,28 +53,48 @@ export async function* streamEvents(
         const head = await blockCache.getLatestBlock();
         headBlockId = { block_number: head.blockNumber };
         const cursorForBackfill = backfillCursor;
+        const initialRollbackCursor =
+          initialCursorRollbackPending && cursorForBackfill !== undefined
+            ? cursorForBackfill
+            : undefined;
         const cursorPastAcceptedHead =
-          cursorForBackfill !== undefined &&
-          cursorForBackfill.blockNumber > head.blockNumber;
+          initialRollbackCursor !== undefined
+            ? initialRollbackCursor.blockNumber > head.blockNumber
+            : cursorForBackfill !== undefined &&
+              cursorForBackfill.blockNumber > head.blockNumber;
+        const shouldRollbackCursorBlock =
+          initialRollbackCursor !== undefined || cursorPastAcceptedHead;
 
-        if (cursorPastAcceptedHead) {
-          const startingBlockNumber = head.blockNumber + 1;
+        let skipBackfill = false;
+
+        if (shouldRollbackCursorBlock && cursorForBackfill !== undefined) {
+          initialCursorRollbackPending = false;
+          const startingBlockNumber = cursorPastAcceptedHead
+            ? head.blockNumber + 1
+            : cursorForBackfill.blockNumber;
           const endingBlockNumber = cursorForBackfill.blockNumber;
+          const rollbackCursor = cursorBeforeBlock(startingBlockNumber);
           const shouldEmitRollback =
             !isRollbackCursor(cursorForBackfill) ||
             cursorForBackfill.blockNumber > startingBlockNumber;
 
-          lastYieldedCursor = cursorBeforeBlock(startingBlockNumber);
+          lastYieldedCursor = rollbackCursor;
           lastRealCursor = undefined;
+          backfillFromBlock = { block_number: startingBlockNumber };
           backfillCursor = undefined;
           lastBackfilledBlockNumber = head.blockNumber;
           blockCache.invalidateFrom(startingBlockNumber);
           httpRetryAttempt = 0;
+          skipBackfill = startingBlockNumber > head.blockNumber;
 
           if (shouldEmitRollback) {
             yield syntheticReorgMessage(startingBlockNumber, endingBlockNumber);
           }
         } else {
+          initialCursorRollbackPending = false;
+        }
+
+        if (!skipBackfill) {
           for await (const message of backfillEvents({
             url: options.url,
             fromBlock: backfillFromBlock,
@@ -237,6 +259,26 @@ function throwIfAborted(signal: AbortSignal | undefined): void {
 
 function isRollbackCursor(cursor: EventCursor | undefined): boolean {
   return cursor !== undefined && isCursorBeforeBlock(cursor);
+}
+
+function shouldReplayInitialCursorBlock(options: StreamEventsOptions): boolean {
+  if (!options.cursor || isRollbackCursor(options.cursor)) {
+    return false;
+  }
+
+  const cursorFinalityStatus = options.cursorFinalityStatus;
+  if (
+    cursorFinalityStatus === "ACCEPTED_ON_L2" ||
+    cursorFinalityStatus === "ACCEPTED_ON_L1"
+  ) {
+    return false;
+  }
+
+  return (
+    cursorFinalityStatus === "PRE_CONFIRMED" ||
+    (options.finalityStatus ?? DEFAULT_SUBSCRIPTION_FINALITY_STATUS) ===
+      "PRE_CONFIRMED"
+  );
 }
 
 function syntheticReorgMessage(

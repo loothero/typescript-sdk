@@ -195,7 +195,7 @@ describe("HTTP backfill", () => {
     ]);
   });
 
-  it("omits non-conformant multi-address RPC filters and filters client-side", async () => {
+  it("sends v0.10 multi-address RPC filters and filters client-side", async () => {
     const requests: unknown[] = [];
     mockRpcFetch((request) => {
       requests.push(request);
@@ -220,6 +220,7 @@ describe("HTTP backfill", () => {
     expect(requests).toHaveLength(1);
     expect((requests[0] as JsonRpcRequest).params).toEqual([
       {
+        address: [normalizeFelt("0xaaa"), normalizeFelt("0xbbb")],
         chunk_size: 100,
       },
     ]);
@@ -846,6 +847,158 @@ describe("combined stream", () => {
         },
       },
     });
+
+    await iterator.return?.(undefined);
+  });
+
+  it("replays a persisted pre-confirmed cursor block after accepted head catches up", async () => {
+    const sockets: MockWebSocket[] = [];
+    const eventRequests: Array<Record<string, unknown>> = [];
+
+    mockRpcFetch((request) => {
+      if (request.method === "starknet_getBlockWithTxHashes") {
+        return {
+          block_hash: "0x0b",
+          block_number: 11,
+          timestamp: 111,
+          transactions: [],
+        };
+      }
+
+      if (request.method === "starknet_getEvents") {
+        const filter = singleParam(request);
+        eventRequests.push(filter);
+        return {
+          events: [
+            rawEvent({
+              blockNumber: 11,
+              transactionHash: "0xbbb",
+              transactionIndex: 4,
+              eventIndex: 2,
+              finalityStatus: "ACCEPTED_ON_L2",
+            }),
+          ],
+        };
+      }
+
+      throw new Error(`unexpected method ${request.method}`);
+    });
+
+    const iterator = streamEvents({
+      url: RPC_URL,
+      wsUrl: WS_URL,
+      cursor: cursor(11, "0xaaa", 4, 2),
+      cursorFinalityStatus: "PRE_CONFIRMED",
+      webSocketFactory: mockWebSocketFactory(sockets),
+    });
+
+    await expect(iterator.next()).resolves.toMatchObject({
+      done: false,
+      value: {
+        type: "reorg",
+        reorg: {
+          startingBlockNumber: 11,
+          endingBlockNumber: 11,
+          synthetic: true,
+        },
+        rollbackCursor: {
+          blockNumber: 11,
+          transactionIndex: -1,
+          transactionHash: "0x0",
+          eventIndex: -1,
+        },
+      },
+    });
+
+    await expect(iterator.next()).resolves.toMatchObject({
+      done: false,
+      value: {
+        type: "event",
+        cursor: {
+          blockNumber: 11,
+          transactionIndex: 4,
+          transactionHash: normalizeFelt("0xbbb"),
+          eventIndex: 2,
+        },
+      },
+    });
+    expect(eventRequests).toEqual([
+      {
+        from_block: { block_number: 11 },
+        to_block: { block_number: 11 },
+        chunk_size: 100,
+      },
+    ]);
+    expect(sockets).toHaveLength(0);
+
+    await iterator.return?.(undefined);
+  });
+
+  it("skips conservative cursor-block replay when the persisted cursor is accepted", async () => {
+    const sockets: MockWebSocket[] = [];
+    const eventRequests: Array<Record<string, unknown>> = [];
+
+    mockRpcFetch((request) => {
+      if (request.method === "starknet_getBlockWithTxHashes") {
+        return {
+          block_hash: "0x0b",
+          block_number: 11,
+          timestamp: 111,
+          transactions: [],
+        };
+      }
+
+      if (request.method === "starknet_getEvents") {
+        const filter = singleParam(request);
+        eventRequests.push(filter);
+        return {
+          events: [
+            rawEvent({
+              blockNumber: 11,
+              transactionHash: "0xaaa",
+              transactionIndex: 4,
+              eventIndex: 2,
+            }),
+            rawEvent({
+              blockNumber: 11,
+              transactionHash: "0xccc",
+              transactionIndex: 5,
+              eventIndex: 0,
+            }),
+          ],
+        };
+      }
+
+      throw new Error(`unexpected method ${request.method}`);
+    });
+
+    const iterator = streamEvents({
+      url: RPC_URL,
+      wsUrl: WS_URL,
+      cursor: cursor(11, "0xaaa", 4, 2),
+      cursorFinalityStatus: "ACCEPTED_ON_L2",
+      webSocketFactory: mockWebSocketFactory(sockets),
+    });
+
+    await expect(iterator.next()).resolves.toMatchObject({
+      done: false,
+      value: {
+        type: "event",
+        cursor: {
+          blockNumber: 11,
+          transactionIndex: 5,
+          transactionHash: normalizeFelt("0xccc"),
+          eventIndex: 0,
+        },
+      },
+    });
+    expect(eventRequests).toEqual([
+      {
+        from_block: { block_number: 11 },
+        to_block: { block_number: 11 },
+        chunk_size: 100,
+      },
+    ]);
 
     await iterator.return?.(undefined);
   });

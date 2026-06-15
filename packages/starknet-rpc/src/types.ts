@@ -142,6 +142,8 @@ export interface StreamEventsOptions extends Omit<EventFilter, "toBlock"> {
   url: string;
   wsUrl: string;
   cursor?: EventCursor;
+  /** Finality of the persisted cursor, when known. Unknown cursors are replayed conservatively for pre-confirmed live streams. */
+  cursorFinalityStatus?: FinalityStatus;
   /** Applies to the live WebSocket subscription. Historical backfill uses accepted events. */
   finalityStatus?: SubscriptionFinalityStatus;
   signal?: AbortSignal;

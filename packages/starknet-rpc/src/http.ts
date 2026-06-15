@@ -36,7 +36,7 @@ interface JsonRpcResponse<T> {
 interface StarknetGetEventsFilter {
   from_block?: GetEventsOptions["fromBlock"];
   to_block?: GetEventsOptions["toBlock"];
-  address?: Felt;
+  address?: Felt | Felt[];
   keys?: Felt[][];
   chunk_size?: number;
   continuation_token?: string;
@@ -257,8 +257,8 @@ function buildGetEventsParams(
     filter.to_block = options.toBlock;
   }
 
-  if (addresses?.length === 1) {
-    filter.address = addresses[0];
+  if (addresses !== undefined) {
+    filter.address = addresses.length === 1 ? addresses[0] : addresses;
   }
 
   if (keys !== undefined) {

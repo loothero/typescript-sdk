@@ -97,6 +97,7 @@ for await (const message of streamEvents({
   wsUrl: process.env.STARKNET_WS_URL!,
   fromBlock: { block_number: 0 },
   cursor: await loadCursor(),
+  cursorFinalityStatus: await loadCursorFinalityStatus(),
   addresses: ["0x1234"],
   keys: [["0xabcdef"]],
 })) {
@@ -145,7 +146,8 @@ create table indexer_cursor (
   block_number integer not null,
   transaction_index integer not null,
   transaction_hash text not null,
-  event_index integer not null
+  event_index integer not null,
+  finality_status text
 );
 ```
 
@@ -163,6 +165,14 @@ block_number + transaction_hash + event_index
 
 `event_index` is scoped to the transaction, not the whole block. Do not use
 `block_number + event_index` as a unique key.
+
+When using the default pre-confirmed live stream, persist the event finality
+next to the cursor and pass it back as `cursorFinalityStatus` on restart. If the
+cursor finality is unknown and the live stream uses `PRE_CONFIRMED`,
+`streamEvents` conservatively emits a synthetic rollback for the cursor block
+and replays that block over HTTP before returning to WebSocket live indexing.
+This prevents a missed reorg from skipping replacement events that share the
+same `block_number + transaction_index + event_index` ordering.
 
 ## Schema Recommendations
 
@@ -209,6 +219,8 @@ If a process restarts with a persisted pre-confirmed cursor beyond the current
 accepted head, `streamEvents` emits a synthetic reorg message and resets its
 dedupe state to `message.rollbackCursor` before subscribing live. This prevents
 replacement events at the same cursor ordering from being skipped.
+If the accepted head has already caught up to the cursor block, the synthetic
+rollback starts at the cursor block and the HTTP backfill leg replays that block.
 
 ## Finality
 
