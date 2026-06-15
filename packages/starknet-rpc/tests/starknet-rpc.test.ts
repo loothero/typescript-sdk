@@ -155,6 +155,36 @@ describe("HTTP backfill", () => {
     ]);
   });
 
+  it("omits non-conformant multi-address RPC filters and filters client-side", async () => {
+    const requests: unknown[] = [];
+    mockRpcFetch((request) => {
+      requests.push(request);
+      return {
+        events: [
+          rawEvent({ fromAddress: "0xaaa", transactionHash: "0x1" }),
+          rawEvent({ fromAddress: "0xbbb", transactionHash: "0x2" }),
+          rawEvent({ fromAddress: "0xccc", transactionHash: "0x3" }),
+        ],
+      };
+    });
+
+    const page = await getEvents({
+      url: RPC_URL,
+      addresses: ["0xaaa", "0xbbb"],
+    });
+
+    expect(page.events.map((event) => event.transactionHash)).toEqual([
+      normalizeFelt("0x1"),
+      normalizeFelt("0x2"),
+    ]);
+    expect(requests).toHaveLength(1);
+    expect((requests[0] as JsonRpcRequest).params).toEqual([
+      {
+        chunk_size: 100,
+      },
+    ]);
+  });
+
   it("sends getBlockWithTxHashes block ids as positional JSON-RPC params", async () => {
     const requests: unknown[] = [];
     mockRpcFetch((request) => {

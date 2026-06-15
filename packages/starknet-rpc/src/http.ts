@@ -36,7 +36,7 @@ interface JsonRpcResponse<T> {
 interface StarknetGetEventsFilter {
   from_block?: GetEventsOptions["fromBlock"];
   to_block?: GetEventsOptions["toBlock"];
-  address?: Felt | Felt[];
+  address?: Felt;
   keys?: Felt[][];
   chunk_size?: number;
   continuation_token?: string;
@@ -60,6 +60,7 @@ interface TransportContext extends RpcContext {
 }
 
 let nextJsonRpcId = 1;
+const DEFAULT_GET_EVENTS_CHUNK_SIZE = 100;
 
 export class StarknetRpcError extends Error {
   code: number;
@@ -256,17 +257,15 @@ function buildGetEventsParams(
     filter.to_block = options.toBlock;
   }
 
-  if (addresses !== undefined) {
-    filter.address = addresses.length === 1 ? addresses[0] : addresses;
+  if (addresses?.length === 1) {
+    filter.address = addresses[0];
   }
 
   if (keys !== undefined) {
     filter.keys = keys;
   }
 
-  if (options.chunkSize !== undefined) {
-    filter.chunk_size = options.chunkSize;
-  }
+  filter.chunk_size = options.chunkSize ?? DEFAULT_GET_EVENTS_CHUNK_SIZE;
 
   if (options.continuationToken !== undefined) {
     filter.continuation_token = options.continuationToken;
