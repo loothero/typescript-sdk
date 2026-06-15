@@ -22,6 +22,8 @@ const UNSUBSCRIBE_METHOD = "starknet_unsubscribe";
 
 const WS_OPEN = 1;
 const WS_CLOSED = 3;
+const DEFAULT_WS_IDLE_TIMEOUT_MS = 60_000;
+const DEFAULT_WS_MAX_QUEUE_SIZE = 10_000;
 
 type JsonRpcId = number | string;
 
@@ -51,24 +53,70 @@ export class TooManyBlocksBackError extends Error {
   }
 }
 
+export class WebSocketIdleTimeoutError extends Error {
+  constructor(readonly idleTimeoutMs: number) {
+    super(`WebSocket subscription idle for ${idleTimeoutMs}ms`);
+    this.name = "WebSocketIdleTimeoutError";
+  }
+}
+
+export class WebSocketQueueOverflowError extends Error {
+  constructor(readonly maxQueueSize: number) {
+    super(`WebSocket subscription queue exceeded ${maxQueueSize} messages`);
+    this.name = "WebSocketQueueOverflowError";
+  }
+}
+
 export async function* connectSubscribeEvents(
   options: SubscribeEventsOptions,
 ): AsyncGenerator<StreamMessage> {
+  const subscribeParams = buildSubscribeParams(options);
+  const idleTimeoutMs = normalizeIdleTimeoutMs(options.idleTimeoutMs);
+  const maxQueueSize = normalizeMaxQueueSize(options.maxQueueSize);
   const ws = createWebSocket(options.url, options.webSocketFactory);
-  const queue = new AsyncMessageQueue<unknown>();
+  const queue = new AsyncMessageQueue<unknown>(maxQueueSize);
   const requestId = 1;
   const unsubscribeRequestId = 2;
   let subscriptionId: unknown;
+  let idleTimeout: ReturnType<typeof setTimeout> | undefined;
+  let parseChain: Promise<void> = Promise.resolve();
 
   const closeOnAbort = () => {
     queue.close();
   };
+  const clearIdleTimer = () => {
+    if (idleTimeout) {
+      clearTimeout(idleTimeout);
+      idleTimeout = undefined;
+    }
+  };
+  const resetIdleTimer = () => {
+    clearIdleTimer();
+    if (idleTimeoutMs === 0) {
+      return;
+    }
+
+    idleTimeout = setTimeout(() => {
+      queue.close(new WebSocketIdleTimeoutError(idleTimeoutMs));
+      closeWebSocket(ws, 4000, "subscription idle timeout");
+    }, idleTimeoutMs);
+  };
+  const parseAndQueueMessage = async (event: unknown) => {
+    try {
+      queue.push(await parseMessageEvent(event));
+    } catch {
+      // Drop malformed transport frames. Valid JSON-RPC error responses and
+      // invalid Starknet event payloads are handled after parsing.
+    }
+  };
 
   const onMessage = (event: unknown) => {
-    void parseMessageEvent(event).then(
-      (message) => queue.push(message),
-      (error) => queue.close(error),
+    resetIdleTimer();
+    parseChain = parseChain.then(
+      () => parseAndQueueMessage(event),
+      () => parseAndQueueMessage(event),
     );
+    void parseChain;
   };
   const onError = (event: unknown) => {
     queue.close(toWebSocketError(event));
@@ -86,13 +134,14 @@ export async function* connectSubscribeEvents(
     throwIfAborted(options.signal);
     await waitForOpen(ws, options.signal);
     throwIfAborted(options.signal);
+    resetIdleTimer();
 
     ws.send(
       JSON.stringify({
         jsonrpc: "2.0",
         id: requestId,
         method: SUBSCRIBE_METHOD,
-        params: buildSubscribeParams(options),
+        params: subscribeParams,
       }),
     );
 
@@ -122,6 +171,7 @@ export async function* connectSubscribeEvents(
       }
     }
   } finally {
+    clearIdleTimer();
     options.signal?.removeEventListener?.("abort", closeOnAbort);
 
     if (subscriptionId !== undefined && isOpen(ws)) {
@@ -238,6 +288,34 @@ function normalizeAddresses(addresses?: Felt[]): Felt | Felt[] | undefined {
     ),
   );
   return normalized.length === 1 ? normalized[0] : normalized;
+}
+
+function normalizeIdleTimeoutMs(value: number | undefined): number {
+  if (value === undefined) {
+    return DEFAULT_WS_IDLE_TIMEOUT_MS;
+  }
+
+  if (!Number.isInteger(value) || value < 0) {
+    throw new Error("idleTimeoutMs must be a non-negative integer");
+  }
+
+  return value;
+}
+
+function normalizeMaxQueueSize(value: number | undefined): number {
+  if (value === undefined) {
+    return DEFAULT_WS_MAX_QUEUE_SIZE;
+  }
+
+  if (value === Number.POSITIVE_INFINITY) {
+    return value;
+  }
+
+  if (!Number.isInteger(value) || value < 1) {
+    throw new Error("maxQueueSize must be a positive integer");
+  }
+
+  return value;
 }
 
 async function waitForOpen(
@@ -451,13 +529,17 @@ function isOpen(ws: RpcWebSocket): boolean {
   return ws.readyState === undefined || ws.readyState === WS_OPEN;
 }
 
-function closeWebSocket(ws: RpcWebSocket): void {
+function closeWebSocket(
+  ws: RpcWebSocket,
+  code = 1000,
+  reason = "subscription closed",
+): void {
   if (ws.readyState === WS_CLOSED) {
     return;
   }
 
   try {
-    ws.close(1000, "subscription closed");
+    ws.close(code, reason);
   } catch {
     // Closing is best effort across structural WebSocket implementations.
   }
@@ -504,6 +586,8 @@ class AsyncMessageQueue<T> {
   private closed = false;
   private error: unknown;
 
+  constructor(private readonly maxSize: number) {}
+
   push(value: T): void {
     if (this.closed) {
       return;
@@ -512,6 +596,11 @@ class AsyncMessageQueue<T> {
     const waiter = this.waiters.shift();
     if (waiter) {
       waiter.resolve({ done: false, value });
+      return;
+    }
+
+    if (this.values.length >= this.maxSize) {
+      this.close(new WebSocketQueueOverflowError(this.maxSize));
       return;
     }
 

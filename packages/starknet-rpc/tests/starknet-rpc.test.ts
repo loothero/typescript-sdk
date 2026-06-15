@@ -3,12 +3,20 @@ import { backfillEvents } from "../src/backfill";
 import { StarknetBlockCache, getBlockWithTxHashes } from "../src/block-cache";
 import { compareEventCursor, eventCursorKey } from "../src/cursor";
 import { getEvents } from "../src/http";
-import { normalizeEvent, normalizeFelt } from "../src/normalize";
+import {
+  StarknetEventCursorError,
+  normalizeEvent,
+  normalizeFelt,
+} from "../src/normalize";
 import { streamEvents } from "../src/stream";
 import { StarknetRpcStream } from "../src/stream-config";
 import { subscribeEvents } from "../src/subscribe";
 import type { EventCursor, RpcEvent } from "../src/types";
-import { TooManyBlocksBackError, connectSubscribeEvents } from "../src/ws";
+import {
+  TooManyBlocksBackError,
+  WebSocketQueueOverflowError,
+  connectSubscribeEvents,
+} from "../src/ws";
 
 const RPC_URL = "http://example.test/rpc";
 const WS_URL = "ws://example.test/rpc";
@@ -102,6 +110,12 @@ describe("event normalization", () => {
 
     expect(() => normalizeEvent(missingTransactionIndex)).toThrow(
       /Starknet JSON-RPC >= 0\.10/,
+    );
+
+    const { block_number: _blockNumber, ...missingBlockNumber } = rawEvent();
+
+    expect(() => normalizeEvent(missingBlockNumber)).toThrow(
+      StarknetEventCursorError,
     );
   });
 });
@@ -559,6 +573,103 @@ describe("WebSocket subscriptions", () => {
     await iterator.return?.(undefined);
   });
 
+  it("drops malformed WebSocket frames without reconnecting", async () => {
+    const sockets: MockWebSocket[] = [];
+    const iterator = connectSubscribeEvents({
+      url: WS_URL,
+      idleTimeoutMs: 0,
+      webSocketFactory: mockWebSocketFactory(sockets),
+    });
+
+    const next = iterator.next();
+    const socket = await waitForSocket(sockets, 0);
+    socket.open();
+    await waitForSent(socket, "starknet_subscribeEvents");
+    socket.rawMessage("not-json");
+    socket.message({ jsonrpc: "2.0", id: 1, result: "sub-1" });
+    socket.rawMessage("{");
+    socket.message(eventNotification("sub-1", rawEvent({ blockNumber: 1 })));
+
+    await expect(next).resolves.toMatchObject({
+      done: false,
+      value: {
+        type: "event",
+        cursor: {
+          blockNumber: 1,
+        },
+      },
+    });
+    expect(sockets).toHaveLength(1);
+
+    await iterator.return?.(undefined);
+  });
+
+  it("surfaces queue overflow instead of buffering without bound", async () => {
+    const sockets: MockWebSocket[] = [];
+    const iterator = connectSubscribeEvents({
+      url: WS_URL,
+      idleTimeoutMs: 0,
+      maxQueueSize: 1,
+      webSocketFactory: mockWebSocketFactory(sockets),
+    });
+
+    const first = iterator.next();
+    const socket = await waitForSocket(sockets, 0);
+    socket.open();
+    await waitForSent(socket, "starknet_subscribeEvents");
+    socket.message({ jsonrpc: "2.0", id: 1, result: "sub-1" });
+    socket.message(eventNotification("sub-1", rawEvent({ blockNumber: 1 })));
+
+    await expect(first).resolves.toMatchObject({
+      done: false,
+      value: {
+        type: "event",
+        cursor: {
+          blockNumber: 1,
+        },
+      },
+    });
+
+    socket.message(
+      eventNotification(
+        "sub-1",
+        rawEvent({ blockNumber: 2, transactionHash: "0x2" }),
+      ),
+    );
+    await flushTasks();
+    socket.message(
+      eventNotification(
+        "sub-1",
+        rawEvent({ blockNumber: 3, transactionHash: "0x3" }),
+      ),
+    );
+    socket.message(
+      eventNotification(
+        "sub-1",
+        rawEvent({ blockNumber: 4, transactionHash: "0x4" }),
+      ),
+    );
+    socket.message(
+      eventNotification(
+        "sub-1",
+        rawEvent({ blockNumber: 5, transactionHash: "0x5" }),
+      ),
+    );
+    await flushTasks();
+
+    let overflow: unknown;
+    for (let attempt = 0; attempt < 5; attempt++) {
+      try {
+        await iterator.next();
+      } catch (error) {
+        overflow = error;
+        break;
+      }
+    }
+
+    expect(overflow).toBeInstanceOf(WebSocketQueueOverflowError);
+  });
+
   it("dedupes replayed events after reconnect", async () => {
     const sockets: MockWebSocket[] = [];
     const subscription = subscribeEvents({
@@ -609,6 +720,68 @@ describe("WebSocket subscriptions", () => {
         },
       },
     });
+
+    await subscription.unsubscribe();
+  });
+
+  it("reconnects after the WebSocket idle timeout", async () => {
+    const sockets: MockWebSocket[] = [];
+    const subscription = subscribeEvents({
+      url: WS_URL,
+      blockId: { block_number: 1 },
+      idleTimeoutMs: 1,
+      reconnect: { minDelayMs: 0, maxDelayMs: 0 },
+      webSocketFactory: mockWebSocketFactory(sockets),
+    });
+    const iterator = subscription[Symbol.asyncIterator]();
+
+    const next = iterator.next();
+    const socket1 = await waitForSocket(sockets, 0);
+    socket1.open();
+    await waitForSent(socket1, "starknet_subscribeEvents");
+    socket1.message({ jsonrpc: "2.0", id: 1, result: "sub-1" });
+
+    const socket2 = await waitForSocket(sockets, 1);
+    socket2.open();
+    await waitForSent(socket2, "starknet_subscribeEvents");
+    socket2.message({ jsonrpc: "2.0", id: 1, result: "sub-2" });
+    socket2.message(
+      eventNotification(
+        "sub-2",
+        rawEvent({ blockNumber: 1, transactionHash: "0x1" }),
+      ),
+    );
+
+    await expect(next).resolves.toMatchObject({
+      done: false,
+      value: {
+        type: "event",
+        cursor: {
+          blockNumber: 1,
+        },
+      },
+    });
+
+    await subscription.unsubscribe();
+  });
+
+  it("honors a reconnect attempt ceiling", async () => {
+    const sockets: MockWebSocket[] = [];
+    const subscription = subscribeEvents({
+      url: WS_URL,
+      reconnect: { minDelayMs: 0, maxDelayMs: 0, maxAttempts: 0 },
+      webSocketFactory: mockWebSocketFactory(sockets),
+    });
+    const iterator = subscription[Symbol.asyncIterator]();
+
+    const next = iterator.next();
+    const socket = await waitForSocket(sockets, 0);
+    socket.open();
+    await waitForSent(socket, "starknet_subscribeEvents");
+    socket.close();
+
+    await expect(next).rejects.toThrow(/reconnect attempts exceeded 0/);
+    expect(sockets).toHaveLength(1);
 
     await subscription.unsubscribe();
   });
@@ -750,11 +923,9 @@ describe("WebSocket subscriptions", () => {
     } as never);
 
     const next = iterator.next();
-    const socket = await waitForSocket(sockets, 0);
-    socket.open();
 
     await expect(next).rejects.toThrow(/blockId tag/);
-    expect(socket.sent).toHaveLength(0);
+    expect(sockets).toHaveLength(0);
   });
 
   it("rejects unsupported subscription finality statuses before sending", async () => {
@@ -766,11 +937,9 @@ describe("WebSocket subscriptions", () => {
     } as never);
 
     const next = iterator.next();
-    const socket = await waitForSocket(sockets, 0);
-    socket.open();
 
     await expect(next).rejects.toThrow(/finalityStatus/);
-    expect(socket.sent).toHaveLength(0);
+    expect(sockets).toHaveLength(0);
   });
 });
 
@@ -1025,6 +1194,107 @@ describe("combined stream", () => {
       },
       {
         from_block: { block_number: 10 },
+        to_block: { block_number: 12 },
+        chunk_size: 100,
+      },
+    ]);
+
+    await iterator.return?.(undefined);
+  });
+
+  it("skips invalid HTTP ranges when a reorg leaves accepted head before the reorg start", async () => {
+    const sockets: MockWebSocket[] = [];
+    const eventRequests: Array<Record<string, unknown>> = [];
+    let latestCalls = 0;
+
+    mockRpcFetch((request) => {
+      if (request.method === "starknet_getBlockWithTxHashes") {
+        latestCalls += 1;
+        const blockNumber = latestCalls === 1 ? 12 : 10;
+        return {
+          block_hash: `0x${blockNumber.toString(16)}`,
+          block_number: blockNumber,
+          timestamp: 100 + blockNumber,
+          transactions: [],
+        };
+      }
+
+      if (request.method === "starknet_getEvents") {
+        const filter = singleParam(request);
+        eventRequests.push(filter);
+
+        if (
+          isBlockNumberParam(filter.from_block) &&
+          isBlockNumberParam(filter.to_block) &&
+          filter.from_block.block_number > filter.to_block.block_number
+        ) {
+          throw new Error("streamEvents should not query an invalid range");
+        }
+
+        return { events: [] };
+      }
+
+      throw new Error(`unexpected method ${request.method}`);
+    });
+
+    const iterator = streamEvents({
+      url: RPC_URL,
+      wsUrl: WS_URL,
+      fromBlock: { block_number: 0 },
+      webSocketFactory: mockWebSocketFactory(sockets),
+    });
+
+    const reorg = iterator.next();
+    const socket1 = await waitForSocket(sockets, 0);
+    socket1.open();
+    await waitForSent(socket1, "starknet_subscribeEvents");
+    socket1.message({ jsonrpc: "2.0", id: 1, result: "sub-1" });
+    socket1.message(
+      reorgNotification("sub-1", {
+        starting_block_number: 12,
+        starting_block_hash: "0x12",
+        ending_block_number: 12,
+        ending_block_hash: "0x12",
+      }),
+    );
+
+    await expect(reorg).resolves.toMatchObject({
+      done: false,
+      value: {
+        type: "reorg",
+        reorg: {
+          startingBlockNumber: 12,
+        },
+      },
+    });
+
+    const live = iterator.next();
+    const socket2 = await waitForSocket(sockets, 1);
+    socket2.open();
+    const subscribe = await waitForSent(socket2, "starknet_subscribeEvents");
+    expect((subscribe.params as { block_id: unknown }).block_id).toEqual({
+      block_number: 10,
+    });
+    socket2.message({ jsonrpc: "2.0", id: 1, result: "sub-2" });
+    socket2.message(
+      eventNotification(
+        "sub-2",
+        rawEvent({ blockNumber: 12, transactionHash: "0x12" }),
+      ),
+    );
+
+    await expect(live).resolves.toMatchObject({
+      done: false,
+      value: {
+        type: "event",
+        cursor: {
+          blockNumber: 12,
+        },
+      },
+    });
+    expect(eventRequests).toEqual([
+      {
+        from_block: { block_number: 0 },
         to_block: { block_number: 12 },
         chunk_size: 100,
       },
@@ -1426,6 +1696,25 @@ function eventNotification(subscriptionId: string, event: RpcEvent) {
   };
 }
 
+function reorgNotification(
+  subscriptionId: string,
+  reorg: {
+    starting_block_number: number;
+    starting_block_hash: string;
+    ending_block_number: number;
+    ending_block_hash: string;
+  },
+) {
+  return {
+    jsonrpc: "2.0",
+    method: "starknet_subscriptionReorg",
+    params: {
+      subscription_id: subscriptionId,
+      result: reorg,
+    },
+  };
+}
+
 function mockRpcFetch(
   handler: (request: JsonRpcRequest) => unknown | Promise<unknown>,
 ): void {
@@ -1518,6 +1807,10 @@ class MockWebSocket {
     this.dispatch("message", { data: JSON.stringify(value) });
   }
 
+  rawMessage(data: unknown): void {
+    this.dispatch("message", { data });
+  }
+
   private dispatch(type: string, event: unknown): void {
     for (const listener of this.#listeners.get(type) ?? []) {
       listener(event);
@@ -1556,4 +1849,8 @@ async function waitFor(predicate: () => boolean): Promise<void> {
 
     await new Promise((resolve) => setTimeout(resolve, 0));
   }
+}
+
+async function flushTasks(): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, 0));
 }

@@ -18,6 +18,7 @@ export {
   jsonRpc,
 } from "./http";
 export {
+  StarknetEventCursorError,
   matchesEventFilter,
   normalizeEvent,
   normalizeFelt,
@@ -34,6 +35,8 @@ export type {
 export { subscribeEvents } from "./subscribe";
 export {
   TooManyBlocksBackError,
+  WebSocketIdleTimeoutError,
+  WebSocketQueueOverflowError,
   connectSubscribeEvents,
 } from "./ws";
 export type {

@@ -124,6 +124,10 @@ export interface SubscribeEventsOptions {
   finalityStatus?: SubscriptionFinalityStatus;
   cursor?: EventCursor;
   reconnect?: boolean | SubscribeReconnectOptions;
+  /** Close and reconnect when no WebSocket frames are received for this many milliseconds. Set to 0 to disable. */
+  idleTimeoutMs?: number;
+  /** Maximum queued WebSocket messages waiting for the consumer before the subscription is closed. */
+  maxQueueSize?: number;
   signal?: AbortSignal;
   webSocketFactory?: WebSocketFactory;
 }
@@ -132,6 +136,8 @@ export interface SubscribeReconnectOptions {
   enabled?: boolean;
   minDelayMs?: number;
   maxDelayMs?: number;
+  /** Maximum reconnect attempts after a failed or closed connection. Omit for no limit. */
+  maxAttempts?: number;
 }
 
 export interface EventSubscription extends AsyncIterable<StreamMessage> {
@@ -146,6 +152,10 @@ export interface StreamEventsOptions extends Omit<EventFilter, "toBlock"> {
   cursorFinalityStatus?: FinalityStatus;
   /** Applies to the live WebSocket subscription. Historical backfill uses accepted events. */
   finalityStatus?: SubscriptionFinalityStatus;
+  /** Close and reconnect when no WebSocket frames are received for this many milliseconds. Set to 0 to disable. */
+  idleTimeoutMs?: number;
+  /** Maximum queued WebSocket messages waiting for the consumer before the subscription is closed. */
+  maxQueueSize?: number;
   signal?: AbortSignal;
   webSocketFactory?: WebSocketFactory;
 }

@@ -97,6 +97,10 @@ export async function* streamEvents(
           initialCursorRollbackPending = false;
         }
 
+        if (!skipBackfill && isBlockNumberId(backfillFromBlock)) {
+          skipBackfill = backfillFromBlock.block_number > head.blockNumber;
+        }
+
         if (!skipBackfill) {
           for await (const message of backfillEvents({
             url: options.url,
@@ -126,6 +130,8 @@ export async function* streamEvents(
 
           lastBackfilledBlockNumber = head.blockNumber;
           httpRetryAttempt = 0;
+        } else {
+          lastBackfilledBlockNumber = head.blockNumber;
         }
       } catch (error) {
         if (!isRetryableHttpError(error, options.signal)) {
@@ -157,6 +163,8 @@ export async function* streamEvents(
         finalityStatus: options.finalityStatus,
         cursor: lastRealCursor,
         signal: options.signal,
+        idleTimeoutMs: options.idleTimeoutMs,
+        maxQueueSize: options.maxQueueSize,
         webSocketFactory: options.webSocketFactory,
       });
 
@@ -297,6 +305,14 @@ function throwIfAborted(signal: AbortSignal | undefined): void {
 
 function isRollbackCursor(cursor: EventCursor | undefined): boolean {
   return cursor !== undefined && isCursorBeforeBlock(cursor);
+}
+
+function isBlockNumberId(
+  blockId: BlockId | undefined,
+): blockId is { block_number: number } {
+  return (
+    typeof blockId === "object" && blockId !== null && "block_number" in blockId
+  );
 }
 
 function shouldReplayInitialCursorBlock(options: StreamEventsOptions): boolean {

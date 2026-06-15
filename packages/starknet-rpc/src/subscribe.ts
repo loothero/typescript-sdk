@@ -1,6 +1,6 @@
 import { DEFAULT_SUBSCRIPTION_FINALITY_STATUS } from "./constants";
 import { compareEventCursor, eventCursorKey, eventVersionKey } from "./cursor";
-import { normalizeFelt } from "./normalize";
+import { StarknetEventCursorError, normalizeFelt } from "./normalize";
 import type {
   EventCursor,
   EventSubscription,
@@ -19,6 +19,7 @@ type ReconnectConfig = {
   enabled: boolean;
   minDelayMs: number;
   maxDelayMs: number;
+  maxAttempts?: number;
 };
 
 export function subscribeEvents(
@@ -83,9 +84,11 @@ async function* subscribeWithReconnect({
   let lastCursor = options.cursor;
   let blockId = initialBlockId(options);
   let attempt = 0;
+  let lastError: unknown;
 
   while (!signal.aborted && !isUnsubscribed()) {
     let yieldedMessage = false;
+    lastError = undefined;
 
     try {
       for await (const message of connectSubscribeEvents({
@@ -106,7 +109,6 @@ async function* subscribeWithReconnect({
 
           blockId = { block_number: message.reorg.startingBlockNumber };
           yieldedMessage = true;
-          attempt = 0;
           yield message;
           continue;
         }
@@ -123,7 +125,6 @@ async function* subscribeWithReconnect({
         blockId = { block_number: message.cursor.blockNumber };
         seenEvents.remember(key, version);
         yieldedMessage = true;
-        attempt = 0;
         yield message;
       }
     } catch (error) {
@@ -135,9 +136,15 @@ async function* subscribeWithReconnect({
         throw error;
       }
 
+      if (error instanceof StarknetEventCursorError) {
+        throw error;
+      }
+
       if (!reconnect.enabled) {
         throw error;
       }
+
+      lastError = error;
     }
 
     if (signal.aborted || isUnsubscribed()) {
@@ -149,6 +156,13 @@ async function* subscribeWithReconnect({
     }
 
     attempt = yieldedMessage ? 1 : attempt + 1;
+    if (
+      reconnect.maxAttempts !== undefined &&
+      attempt > reconnect.maxAttempts
+    ) {
+      throw reconnectAttemptsExceededError(reconnect.maxAttempts, lastError);
+    }
+
     await waitForReconnect(reconnectDelayMs(reconnect, attempt), signal);
   }
 }
@@ -232,6 +246,7 @@ function normalizeReconnectConfig(
       enabled: false,
       minDelayMs: DEFAULT_MIN_RECONNECT_DELAY_MS,
       maxDelayMs: DEFAULT_MAX_RECONNECT_DELAY_MS,
+      maxAttempts: undefined,
     };
   }
 
@@ -240,6 +255,7 @@ function normalizeReconnectConfig(
       enabled: false,
       minDelayMs: DEFAULT_MIN_RECONNECT_DELAY_MS,
       maxDelayMs: DEFAULT_MAX_RECONNECT_DELAY_MS,
+      maxAttempts: undefined,
     };
   }
 
@@ -251,12 +267,40 @@ function normalizeReconnectConfig(
     typeof reconnect === "object" && reconnect.maxDelayMs !== undefined
       ? Math.max(minDelayMs, reconnect.maxDelayMs)
       : DEFAULT_MAX_RECONNECT_DELAY_MS;
+  const maxAttempts =
+    typeof reconnect === "object" && reconnect.maxAttempts !== undefined
+      ? normalizeMaxAttempts(reconnect.maxAttempts)
+      : undefined;
 
   return {
     enabled: true,
     minDelayMs,
     maxDelayMs: Math.max(minDelayMs, maxDelayMs),
+    maxAttempts,
   };
+}
+
+function normalizeMaxAttempts(value: number): number {
+  if (!Number.isInteger(value) || value < 0) {
+    throw new Error("reconnect.maxAttempts must be a non-negative integer");
+  }
+
+  return value;
+}
+
+function reconnectAttemptsExceededError(
+  maxAttempts: number,
+  cause: unknown,
+): Error {
+  const error = new Error(
+    `WebSocket subscription reconnect attempts exceeded ${maxAttempts}`,
+  );
+
+  if (cause !== undefined) {
+    return Object.assign(error, { cause });
+  }
+
+  return error;
 }
 
 function reconnectDelayMs(

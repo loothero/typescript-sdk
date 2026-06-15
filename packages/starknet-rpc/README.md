@@ -64,6 +64,12 @@ const subscription = subscribeEvents({
   blockId: "latest",
   addresses: ["0x1234"],
   keys: [["0xabcdef"]],
+  idleTimeoutMs: 60_000,
+  maxQueueSize: 10_000,
+  reconnect: {
+    minDelayMs: 500,
+    maxDelayMs: 10_000,
+  },
 });
 
 try {
@@ -86,6 +92,13 @@ try {
 Subscriptions are for recent live indexing. If a node rejects the requested
 `blockId` with `TooManyBlocksBack`, use HTTP backfill first and then subscribe
 from a recent accepted head.
+
+The WebSocket helpers close and reconnect when the connection is idle for
+`idleTimeoutMs` milliseconds. Set `idleTimeoutMs: 0` to disable this watchdog.
+Incoming messages are also bounded by `maxQueueSize`; if the consumer falls too
+far behind, the subscription closes instead of buffering without limit. Use
+`reconnect.maxAttempts` when a misconfigured endpoint should fail permanently
+instead of retrying forever.
 
 ## Combined Stream
 
@@ -229,6 +242,12 @@ cursor finality is unknown and the live stream uses `PRE_CONFIRMED`,
 and replays that block over HTTP before returning to WebSocket live indexing.
 This prevents a missed reorg from skipping replacement events that share the
 same `block_number + transaction_index + event_index` ordering.
+
+If cursor finality is not persisted, this conservative replay happens on every
+restart of a pre-confirmed stream. Rollback and transform handlers should be
+idempotent, especially when they perform external side effects. Persisting
+`finality_status` and passing `cursorFinalityStatus` avoids unnecessary
+cursor-block rollbacks once the cursor is known to be accepted.
 
 Pre-confirmed subscriptions may deliver the same stable event identity again
 when finality or `block_hash` changes. The subscription helpers dedupe exact
