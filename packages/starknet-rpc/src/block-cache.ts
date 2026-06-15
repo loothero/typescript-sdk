@@ -15,20 +15,6 @@ type CachedBlock = {
   metadata: BlockMetadata;
 };
 
-type JsonRpcObjectCaller = <T>(request: {
-  url: string;
-  method: string;
-  params?: unknown;
-  signal?: AbortSignal;
-}) => Promise<T>;
-
-type JsonRpcPositionalCaller = <T>(
-  url: string,
-  method: string,
-  params?: unknown,
-  signal?: AbortSignal,
-) => Promise<T>;
-
 export class StarknetBlockCache {
   readonly #url: string;
   readonly #signal?: AbortSignal;
@@ -121,14 +107,13 @@ export async function getLatestBlock(
 
 export async function getBlockWithTxHashes(
   options: BlockCacheOptions & { blockId?: BlockId },
-  blockId?: BlockId,
 ): Promise<StarknetBlockWithTxHashes> {
-  return callJsonRpc<StarknetBlockWithTxHashes>({
-    url: options.url,
-    method: "starknet_getBlockWithTxHashes",
-    params: [blockId ?? options.blockId ?? "latest"],
-    signal: options.signal,
-  });
+  return jsonRpc<StarknetBlockWithTxHashes>(
+    options.url,
+    "starknet_getBlockWithTxHashes",
+    [options.blockId ?? "latest"],
+    options.signal,
+  );
 }
 
 function blockMetadataFromRpcBlock(
@@ -165,21 +150,6 @@ function blockMetadataFromRpcBlock(
     blockHash: normalizeFelt(block.block_hash, "block.block_hash"),
     timestamp: block.timestamp,
   };
-}
-
-async function callJsonRpc<T>(request: {
-  url: string;
-  method: string;
-  params?: unknown;
-  signal?: AbortSignal;
-}): Promise<T> {
-  const rpc = jsonRpc as JsonRpcObjectCaller & JsonRpcPositionalCaller;
-
-  if (jsonRpc.length >= 2) {
-    return rpc<T>(request.url, request.method, request.params, request.signal);
-  }
-
-  return rpc<T>(request);
 }
 
 function isBlockNumberId(
