@@ -16,7 +16,7 @@ export async function* backfillEvents(
     const page = await getEvents({
       url: options.url,
       fromBlock,
-      toBlock: options.toBlock,
+      toBlock: options.toBlock ?? "latest",
       addresses: options.addresses,
       keys: options.keys,
       chunkSize: options.chunkSize ?? DEFAULT_BACKFILL_CHUNK_SIZE,

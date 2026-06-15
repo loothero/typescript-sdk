@@ -210,6 +210,30 @@ describe("HTTP backfill", () => {
     ]);
   });
 
+  it("defaults omitted backfill toBlock to latest accepted block", async () => {
+    const requests: unknown[] = [];
+    mockRpcFetch((request) => {
+      requests.push(request);
+      return { events: [] };
+    });
+
+    await collect(
+      backfillEvents({
+        url: RPC_URL,
+        fromBlock: { block_number: 1 },
+      }),
+    );
+
+    expect(requests).toHaveLength(1);
+    expect((requests[0] as JsonRpcRequest).params).toEqual([
+      {
+        from_block: { block_number: 1 },
+        to_block: "latest",
+        chunk_size: 100,
+      },
+    ]);
+  });
+
   it("sends v0.10 multi-address RPC filters and filters client-side", async () => {
     const requests: unknown[] = [];
     mockRpcFetch((request) => {
@@ -316,6 +340,7 @@ describe("HTTP backfill", () => {
     expect((requests[0] as JsonRpcRequest).params).toEqual([
       {
         from_block: { block_number: 5 },
+        to_block: "latest",
         chunk_size: 100,
       },
     ]);
