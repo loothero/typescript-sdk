@@ -240,6 +240,41 @@ describe("HTTP backfill", () => {
 });
 
 describe("WebSocket subscriptions", () => {
+  it("subscribes to pre-confirmed events by default", async () => {
+    const sockets: MockWebSocket[] = [];
+    const subscription = subscribeEvents({
+      url: WS_URL,
+      blockId: "latest",
+      webSocketFactory: mockWebSocketFactory(sockets),
+    });
+    const iterator = subscription[Symbol.asyncIterator]();
+
+    const next = iterator.next();
+    const socket = await waitForSocket(sockets, 0);
+    socket.open();
+    const subscribe = await waitForSent(socket, "starknet_subscribeEvents");
+    expect(
+      (subscribe.params as { finality_status: unknown }).finality_status,
+    ).toBe("PRE_CONFIRMED");
+
+    socket.message({ jsonrpc: "2.0", id: 1, result: "sub-1" });
+    socket.message(
+      eventNotification("sub-1", rawEvent({ finalityStatus: "PRE_CONFIRMED" })),
+    );
+
+    await expect(next).resolves.toMatchObject({
+      done: false,
+      value: {
+        type: "event",
+        event: {
+          finalityStatus: "PRE_CONFIRMED",
+        },
+      },
+    });
+
+    await subscription.unsubscribe();
+  });
+
   it("emits Pathfinder reorg notifications", async () => {
     const sockets: MockWebSocket[] = [];
     const iterator = connectSubscribeEvents({
@@ -409,6 +444,9 @@ describe("combined stream", () => {
     expect((subscribe.params as { block_id: unknown }).block_id).toEqual({
       block_number: 10,
     });
+    expect(
+      (subscribe.params as { finality_status: unknown }).finality_status,
+    ).toBe("PRE_CONFIRMED");
     socket.message({ jsonrpc: "2.0", id: 1, result: "sub-1" });
     socket.message(
       eventNotification(
@@ -474,6 +512,7 @@ function rawEvent({
   fromAddress = "0xaaa",
   keys = ["0x111"],
   data = ["0x222"],
+  finalityStatus = "ACCEPTED_ON_L2",
 }: {
   blockNumber?: number;
   blockHash?: string;
@@ -483,6 +522,7 @@ function rawEvent({
   fromAddress?: string;
   keys?: string[];
   data?: string[];
+  finalityStatus?: RpcEvent["finality_status"];
 } = {}): RpcEvent {
   return {
     block_number: blockNumber,
@@ -493,7 +533,7 @@ function rawEvent({
     from_address: fromAddress,
     keys,
     data,
-    finality_status: "ACCEPTED_ON_L2",
+    finality_status: finalityStatus,
   };
 }
 

@@ -11,7 +11,7 @@ import type {
   WebSocketFactory,
 } from "./types";
 
-const DEFAULT_FINALITY_STATUS: FinalityStatus = "ACCEPTED_ON_L2";
+const DEFAULT_FINALITY_STATUS: FinalityStatus = "PRE_CONFIRMED";
 const TOO_MANY_BLOCKS_BACK_CODE = 68;
 const SUBSCRIBE_METHOD = "starknet_subscribeEvents";
 const EVENT_NOTIFICATION = "starknet_subscriptionEvents";

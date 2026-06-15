@@ -11,7 +11,7 @@ import type {
 } from "./types";
 import { TooManyBlocksBackError, connectSubscribeEvents } from "./ws";
 
-const DEFAULT_FINALITY_STATUS: FinalityStatus = "ACCEPTED_ON_L2";
+const DEFAULT_FINALITY_STATUS: FinalityStatus = "PRE_CONFIRMED";
 const DEFAULT_MIN_RECONNECT_DELAY_MS = 500;
 const DEFAULT_MAX_RECONNECT_DELAY_MS = 10_000;
 const MAX_REMEMBERED_CURSOR_KEYS = 2_048;

@@ -161,15 +161,21 @@ starting block with HTTP backfill and then returns to WebSocket live indexing.
 
 ## Finality
 
-Phase 1 targets accepted L2 events by default:
+Phase 1 is designed for low-latency Starknet event indexing:
 
-```ts
-finalityStatus: "ACCEPTED_ON_L2"
-```
+- `backfillEvents` and the HTTP backfill leg of `streamEvents` use
+  `starknet_getEvents` for accepted historical events.
+- `subscribeEvents` and the live WebSocket leg of `streamEvents` subscribe with
+  `finalityStatus: "PRE_CONFIRMED"` by default.
 
-This does not index pending or pre-confirmed events. Applications that require
-non-accepted events should add that support explicitly and validate the cursor
-and rollback behavior for those finality modes.
+Callers can override `finalityStatus` when they need accepted-only live
+indexing, but the default live path is pre-confirmed so applications can observe
+new events as soon as the Starknet node publishes them over
+`starknet_subscribeEvents`.
+
+Pre-confirmed events can be reorged. Callers must persist cursors atomically
+with indexed rows and honor reorg messages by rolling back all chain-derived rows
+where `block_number >= starting_block_number`.
 
 ## Live Integration Tests
 
