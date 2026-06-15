@@ -94,7 +94,19 @@ export async function* connectSubscribeEvents(
       }),
     );
 
-    subscriptionId = await waitForSubscriptionId(queue, requestId);
+    const pendingMessages: unknown[] = [];
+    subscriptionId = await waitForSubscriptionId(
+      queue,
+      requestId,
+      pendingMessages,
+    );
+
+    for (const pendingMessage of pendingMessages) {
+      const message = parseNotification(pendingMessage, subscriptionId);
+      if (message) {
+        yield message;
+      }
+    }
 
     while (true) {
       const next = await queue.next();
@@ -255,6 +267,7 @@ async function waitForOpen(
 async function waitForSubscriptionId(
   queue: AsyncMessageQueue<unknown>,
   requestId: JsonRpcId,
+  pendingMessages: unknown[],
 ): Promise<unknown> {
   while (true) {
     const next = await queue.next();
@@ -264,6 +277,7 @@ async function waitForSubscriptionId(
 
     const response = asResponseFor(next.value, requestId);
     if (!response) {
+      pendingMessages.push(next.value);
       continue;
     }
 
@@ -499,8 +513,8 @@ class AsyncMessageQueue<T> {
   }
 
   async next(): Promise<IteratorResult<T>> {
-    const value = this.values.shift();
-    if (value !== undefined) {
+    if (this.values.length > 0) {
+      const value = this.values.shift() as T;
       return { done: false, value };
     }
 

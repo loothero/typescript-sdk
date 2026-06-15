@@ -90,7 +90,7 @@ async function* subscribeWithReconnect({
   }
 
   while (!signal.aborted && !isUnsubscribed()) {
-    let receivedMessage = false;
+    let yieldedMessage = false;
 
     try {
       for await (const message of connectSubscribeEvents({
@@ -100,9 +100,6 @@ async function* subscribeWithReconnect({
         reconnect: undefined,
         signal,
       })) {
-        receivedMessage = true;
-        attempt = 0;
-
         if (message.type === "reorg") {
           if (
             lastCursor &&
@@ -113,6 +110,8 @@ async function* subscribeWithReconnect({
           }
 
           blockId = { block_number: message.reorg.startingBlockNumber };
+          yieldedMessage = true;
+          attempt = 0;
           yield message;
           continue;
         }
@@ -125,6 +124,8 @@ async function* subscribeWithReconnect({
         lastCursor = message.cursor;
         blockId = { block_number: message.cursor.blockNumber };
         seenCursorKeys.remember(key);
+        yieldedMessage = true;
+        attempt = 0;
         yield message;
       }
     } catch (error) {
@@ -149,7 +150,7 @@ async function* subscribeWithReconnect({
       return;
     }
 
-    attempt = receivedMessage ? 1 : attempt + 1;
+    attempt = yieldedMessage ? 1 : attempt + 1;
     await waitForReconnect(reconnectDelayMs(reconnect, attempt), signal);
   }
 }

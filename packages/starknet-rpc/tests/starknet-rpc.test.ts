@@ -347,6 +347,33 @@ describe("WebSocket subscriptions", () => {
     await iterator.return?.(undefined);
   });
 
+  it("buffers notifications that arrive before the subscription response", async () => {
+    const sockets: MockWebSocket[] = [];
+    const iterator = connectSubscribeEvents({
+      url: WS_URL,
+      webSocketFactory: mockWebSocketFactory(sockets),
+    });
+
+    const next = iterator.next();
+    const socket = await waitForSocket(sockets, 0);
+    socket.open();
+    await waitForSent(socket, "starknet_subscribeEvents");
+    socket.message(eventNotification("sub-1", rawEvent({ blockNumber: 1 })));
+    socket.message({ jsonrpc: "2.0", id: 1, result: "sub-1" });
+
+    await expect(next).resolves.toMatchObject({
+      done: false,
+      value: {
+        type: "event",
+        cursor: {
+          blockNumber: 1,
+        },
+      },
+    });
+
+    await iterator.return?.(undefined);
+  });
+
   it("dedupes replayed events after reconnect", async () => {
     const sockets: MockWebSocket[] = [];
     const subscription = subscribeEvents({
