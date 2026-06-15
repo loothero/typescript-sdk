@@ -210,6 +210,51 @@ describe("HTTP backfill", () => {
     ]);
   });
 
+  it("does not accumulate fetch abort listeners on a reused parent signal", async () => {
+    const controller = new AbortController();
+    const addListener = vi.spyOn(controller.signal, "addEventListener");
+    const removeListener = vi.spyOn(controller.signal, "removeEventListener");
+    const fetchSignals: Array<AbortSignal | null | undefined> = [];
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url: string, init?: RequestInit) => {
+        fetchSignals.push(init?.signal);
+        const request = JSON.parse(String(init?.body)) as JsonRpcRequest & {
+          id?: number | string;
+        };
+
+        return new Response(
+          JSON.stringify({
+            jsonrpc: "2.0",
+            id: request.id ?? 1,
+            result: { events: [] },
+          }),
+          {
+            headers: {
+              "content-type": "application/json",
+            },
+          },
+        );
+      }),
+    );
+
+    for (let i = 0; i < 3; i++) {
+      await getEvents({
+        url: RPC_URL,
+        fromBlock: { block_number: i },
+        signal: controller.signal,
+      });
+    }
+
+    expect(addListener).toHaveBeenCalledTimes(3);
+    expect(removeListener).toHaveBeenCalledTimes(3);
+    expect(fetchSignals).toHaveLength(3);
+    expect(fetchSignals.every((signal) => signal !== controller.signal)).toBe(
+      true,
+    );
+  });
+
   it("defaults omitted backfill toBlock to latest accepted block", async () => {
     const requests: unknown[] = [];
     mockRpcFetch((request) => {

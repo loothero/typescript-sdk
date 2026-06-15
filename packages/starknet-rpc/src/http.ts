@@ -136,32 +136,39 @@ export async function jsonRpc<T>(
     ...(call.params !== undefined ? { params: call.params } : {}),
   };
 
+  const requestSignal = createRequestAbortSignal(call.signal);
   let response: Response;
+  let body: string;
   try {
-    response = await fetch(call.url, {
-      method: "POST",
-      headers: {
-        accept: "application/json",
-        "content-type": "application/json",
-      },
-      body: JSON.stringify(request),
-      signal: call.signal,
-    });
-  } catch (error) {
-    if (isAbortError(error)) {
-      throw error;
+    try {
+      response = await fetch(call.url, {
+        method: "POST",
+        headers: {
+          accept: "application/json",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify(request),
+        signal: requestSignal.signal,
+      });
+    } catch (error) {
+      if (isAbortError(error)) {
+        throw error;
+      }
+
+      throw new StarknetTransportError(
+        `Failed to send JSON-RPC request to ${call.url}`,
+        {
+          ...context,
+          cause: error,
+        },
+      );
     }
 
-    throw new StarknetTransportError(
-      `Failed to send JSON-RPC request to ${call.url}`,
-      {
-        ...context,
-        cause: error,
-      },
-    );
+    body = await response.text();
+  } finally {
+    requestSignal.cleanup();
   }
 
-  const body = await response.text();
   const parsed = parseJsonRpcResponse<T>(body);
 
   if (!response.ok) {
@@ -360,6 +367,31 @@ function isAbortSignal(value: unknown): value is AbortSignal {
     typeof value.aborted === "boolean" &&
     typeof value.addEventListener === "function"
   );
+}
+
+function createRequestAbortSignal(signal: AbortSignal | undefined): {
+  signal?: AbortSignal;
+  cleanup(): void;
+} {
+  if (!signal) {
+    return { signal: undefined, cleanup() {} };
+  }
+
+  const controller = new AbortController();
+  if (signal.aborted) {
+    controller.abort(signal.reason);
+    return { signal: controller.signal, cleanup() {} };
+  }
+
+  const abort = () => controller.abort(signal.reason);
+  signal.addEventListener("abort", abort, { once: true });
+
+  return {
+    signal: controller.signal,
+    cleanup() {
+      signal.removeEventListener("abort", abort);
+    },
+  };
 }
 
 function bodySnippet(body: string): string | undefined {
