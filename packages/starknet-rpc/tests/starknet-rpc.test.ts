@@ -1,13 +1,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { backfillEvents } from "./backfill";
-import { getBlockWithTxHashes } from "./block-cache";
-import { compareEventCursor, eventCursorKey } from "./cursor";
-import { getEvents } from "./http";
-import { normalizeEvent, normalizeFelt } from "./normalize";
-import { streamEvents } from "./stream";
-import { subscribeEvents } from "./subscribe";
-import type { EventCursor, RpcEvent } from "./types";
-import { TooManyBlocksBackError, connectSubscribeEvents } from "./ws";
+import { backfillEvents } from "../src/backfill";
+import { getBlockWithTxHashes } from "../src/block-cache";
+import { compareEventCursor, eventCursorKey } from "../src/cursor";
+import { getEvents } from "../src/http";
+import { normalizeEvent, normalizeFelt } from "../src/normalize";
+import { streamEvents } from "../src/stream";
+import { subscribeEvents } from "../src/subscribe";
+import type { EventCursor, RpcEvent } from "../src/types";
+import { TooManyBlocksBackError, connectSubscribeEvents } from "../src/ws";
 
 const RPC_URL = "http://example.test/rpc";
 const WS_URL = "ws://example.test/rpc";
