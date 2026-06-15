@@ -6,6 +6,14 @@ export function compareEventCursor(a: EventCursor, b: EventCursor): number {
     return a.blockNumber < b.blockNumber ? -1 : 1;
   }
 
+  if (a.transactionIndex !== b.transactionIndex) {
+    return a.transactionIndex < b.transactionIndex ? -1 : 1;
+  }
+
+  if (a.eventIndex !== b.eventIndex) {
+    return a.eventIndex < b.eventIndex ? -1 : 1;
+  }
+
   const aTransactionHash = normalizeFelt(
     a.transactionHash,
     "cursor.transactionHash",
@@ -17,10 +25,6 @@ export function compareEventCursor(a: EventCursor, b: EventCursor): number {
 
   if (aTransactionHash !== bTransactionHash) {
     return aTransactionHash < bTransactionHash ? -1 : 1;
-  }
-
-  if (a.eventIndex !== b.eventIndex) {
-    return a.eventIndex < b.eventIndex ? -1 : 1;
   }
 
   return 0;

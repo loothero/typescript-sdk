@@ -1,9 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { backfillEvents } from "./backfill";
 import { getBlockWithTxHashes } from "./block-cache";
-import { compareEventCursor } from "./cursor";
+import { compareEventCursor, eventCursorKey } from "./cursor";
 import { getEvents } from "./http";
-import { normalizeFelt } from "./normalize";
+import { normalizeEvent, normalizeFelt } from "./normalize";
 import { streamEvents } from "./stream";
 import { subscribeEvents } from "./subscribe";
 import type { EventCursor, RpcEvent } from "./types";
@@ -25,16 +25,43 @@ describe("felt normalization", () => {
 });
 
 describe("cursor comparison", () => {
-  it("orders by block number, transaction hash, and per-transaction event index", () => {
+  it("orders by block number, transaction index, and per-transaction event index", () => {
     expect(
-      compareEventCursor(cursor(1, "0x2", 0), cursor(2, "0x1", 0)),
+      compareEventCursor(cursor(1, "0x2", 0, 0), cursor(2, "0x1", 0, 0)),
     ).toBeLessThan(0);
     expect(
-      compareEventCursor(cursor(2, "0x1", 1), cursor(2, "0x2", 0)),
+      compareEventCursor(cursor(2, "0xff", 0, 0), cursor(2, "0x1", 1, 0)),
     ).toBeLessThan(0);
     expect(
-      compareEventCursor(cursor(2, "0x2", 1), cursor(2, "0x2", 0)),
+      compareEventCursor(cursor(2, "0x2", 1, 1), cursor(2, "0x2", 1, 0)),
     ).toBeGreaterThan(0);
+    expect(
+      compareEventCursor(cursor(2, "0x2", 1, 0), cursor(2, "0x1", 1, 0)),
+    ).toBeGreaterThan(0);
+  });
+
+  it("keeps the cursor identity keyed by transaction hash and event index", () => {
+    expect(eventCursorKey(cursor(5, "0xabc", 1, 2))).toBe(
+      eventCursorKey(cursor(5, "0x0abc", 99, 2)),
+    );
+  });
+});
+
+describe("event normalization", () => {
+  it("requires transaction_index and includes it in the cursor", () => {
+    expect(normalizeEvent(rawEvent({ transactionIndex: 7 })).cursor).toEqual({
+      blockNumber: 1,
+      transactionIndex: 7,
+      transactionHash: normalizeFelt("0x1"),
+      eventIndex: 0,
+    });
+
+    const { transaction_index: _transactionIndex, ...missingTransactionIndex } =
+      rawEvent();
+
+    expect(() => normalizeEvent(missingTransactionIndex)).toThrow(
+      /event\.transaction_index/,
+    );
   });
 });
 
@@ -156,15 +183,30 @@ describe("HTTP backfill", () => {
 
   it("resumes from a persisted cursor and skips replayed events", async () => {
     const requests: unknown[] = [];
-    const resumeCursor = cursor(5, "0x2", 1);
+    const resumeCursor = cursor(5, "0x2", 1, 1);
 
     mockRpcFetch((request) => {
       requests.push(request);
       return {
         events: [
-          rawEvent({ blockNumber: 5, transactionHash: "0x1", eventIndex: 0 }),
-          rawEvent({ blockNumber: 5, transactionHash: "0x2", eventIndex: 1 }),
-          rawEvent({ blockNumber: 5, transactionHash: "0x3", eventIndex: 0 }),
+          rawEvent({
+            blockNumber: 5,
+            transactionHash: "0x1",
+            transactionIndex: 0,
+            eventIndex: 0,
+          }),
+          rawEvent({
+            blockNumber: 5,
+            transactionHash: "0x2",
+            transactionIndex: 1,
+            eventIndex: 1,
+          }),
+          rawEvent({
+            blockNumber: 5,
+            transactionHash: "0x3",
+            transactionIndex: 2,
+            eventIndex: 0,
+          }),
         ],
       };
     });
@@ -181,6 +223,7 @@ describe("HTTP backfill", () => {
     expect(messages).toHaveLength(1);
     expect(messages[0].cursor).toMatchObject({
       blockNumber: 5,
+      transactionIndex: 2,
       transactionHash: normalizeFelt("0x3"),
       eventIndex: 0,
     });
@@ -416,9 +459,10 @@ function singleParam(request: JsonRpcRequest): Record<string, unknown> {
 function cursor(
   blockNumber: number,
   transactionHash = "0x1",
+  transactionIndex = 0,
   eventIndex = 0,
 ): EventCursor {
-  return { blockNumber, transactionHash, eventIndex };
+  return { blockNumber, transactionIndex, transactionHash, eventIndex };
 }
 
 function rawEvent({

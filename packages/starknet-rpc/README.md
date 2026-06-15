@@ -110,9 +110,16 @@ event:
 create table indexer_cursor (
   id text primary key,
   block_number integer not null,
+  transaction_index integer not null,
   transaction_hash text not null,
   event_index integer not null
 );
+```
+
+Cursor ordering and resume semantics use:
+
+```text
+block_number + transaction_index + event_index
 ```
 
 The stable event identity is:
@@ -130,6 +137,7 @@ For event-derived tables, store:
 
 - `block_number`
 - `block_hash`
+- `transaction_index`
 - `transaction_hash`
 - `event_index`
 - contract address
@@ -137,7 +145,8 @@ For event-derived tables, store:
 
 Use a unique constraint on `(block_number, transaction_hash, event_index)` for
 raw event rows. Domain tables can use their own keys, but they should also store
-the event cursor fields that created or last updated each row.
+the event cursor fields that created or last updated each row, including
+`transaction_index` for ordering.
 
 ## Reorg Rollback
 
@@ -174,8 +183,8 @@ linkable.
 Recommended migration steps:
 
 1. Replace `StarknetStream` event ingestion with `streamEvents`.
-2. Persist `(block_number, transaction_hash, event_index)` atomically with each
-   event-derived write.
+2. Persist `(block_number, transaction_index, transaction_hash, event_index)`
+   atomically with each event-derived write.
 3. Add rollback handling for chain-derived tables on reorg messages.
 4. Keep external caches, including `cartridge_names`, outside the rollback path.
 5. Run Summit against accepted-only events first.

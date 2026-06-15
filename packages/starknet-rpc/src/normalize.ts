@@ -49,14 +49,10 @@ export function normalizeEvent(raw: RpcEvent): NormalizedEvent {
     raw.event_index,
     "event.event_index",
   );
-
-  const transactionIndex =
-    raw.transaction_index === undefined
-      ? undefined
-      : requiredNonNegativeInteger(
-          raw.transaction_index,
-          "event.transaction_index",
-        );
+  const transactionIndex = requiredNonNegativeInteger(
+    raw.transaction_index,
+    "event.transaction_index",
+  );
 
   const blockHash =
     raw.block_hash === undefined
@@ -66,6 +62,7 @@ export function normalizeEvent(raw: RpcEvent): NormalizedEvent {
   return {
     cursor: {
       blockNumber,
+      transactionIndex,
       transactionHash,
       eventIndex,
     },

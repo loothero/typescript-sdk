@@ -130,6 +130,7 @@ function cursorBeforeBlock(blockNumber: number): EventCursor {
   // Synthetic in-memory cursor used only for local dedupe after a rollback.
   return {
     blockNumber,
+    transactionIndex: -1,
     transactionHash: "0x0",
     eventIndex: -1,
   };

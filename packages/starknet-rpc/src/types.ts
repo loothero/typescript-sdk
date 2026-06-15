@@ -18,6 +18,7 @@ export type FinalityStatus =
 
 export interface EventCursor {
   blockNumber: number;
+  transactionIndex: number;
   transactionHash: Felt;
   eventIndex: number;
 }
@@ -42,7 +43,7 @@ export interface NormalizedEvent {
   blockHash?: Felt;
   blockNumber: number;
   transactionHash: Felt;
-  transactionIndex?: number;
+  transactionIndex: number;
   eventIndex: number;
   finalityStatus?: FinalityStatus;
   raw: RpcEvent;
