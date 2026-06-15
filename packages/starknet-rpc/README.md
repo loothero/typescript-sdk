@@ -112,6 +112,16 @@ for await (const message of streamEvents({
 
 This avoids a missing-event window between HTTP and WebSocket indexing.
 
+If the WebSocket handoff block has fallen outside the node's subscription
+history window, `streamEvents` catches the `TooManyBlocksBack` response, runs
+another HTTP catch-up pass to the latest accepted head, and retries the live
+subscription from the newer block.
+
+`streamEvents` retries transport-level HTTP failures with exponential backoff.
+JSON-RPC errors are surfaced to the caller. Direct `getEvents` and
+`backfillEvents` calls do not add a global rate limiter; callers indexing large
+histories should choose a node and `chunkSize` appropriate for their rate limits.
+
 ## Cursor Contract
 
 Persist the cursor in the same transaction as the indexed rows derived from the
