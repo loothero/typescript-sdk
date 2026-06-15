@@ -696,6 +696,67 @@ describe("combined stream", () => {
 
     await iterator.return?.(undefined);
   });
+
+  it("retries HTTP transport errors and resumes backfill", async () => {
+    const sockets: MockWebSocket[] = [];
+    const eventRequests: Array<Record<string, unknown>> = [];
+    let latestCalls = 0;
+
+    vi.spyOn(Math, "random").mockReturnValue(-1);
+    mockRpcFetch(async (request) => {
+      if (request.method === "starknet_getBlockWithTxHashes") {
+        latestCalls += 1;
+
+        if (latestCalls === 1) {
+          return new Response("temporary unavailable", { status: 503 });
+        }
+
+        return {
+          block_hash: "0x14",
+          block_number: 20,
+          timestamp: 120,
+          transactions: [],
+        };
+      }
+
+      if (request.method === "starknet_getEvents") {
+        const filter = singleParam(request);
+        eventRequests.push(filter);
+        return {
+          events: [rawEvent({ blockNumber: 20, transactionHash: "0x20" })],
+        };
+      }
+
+      throw new Error(`unexpected method ${request.method}`);
+    });
+
+    const iterator = streamEvents({
+      url: RPC_URL,
+      wsUrl: WS_URL,
+      fromBlock: { block_number: 0 },
+      webSocketFactory: mockWebSocketFactory(sockets),
+    });
+
+    await expect(iterator.next()).resolves.toMatchObject({
+      done: false,
+      value: {
+        type: "event",
+        cursor: {
+          blockNumber: 20,
+        },
+      },
+    });
+    expect(latestCalls).toBe(2);
+    expect(eventRequests).toEqual([
+      {
+        from_block: { block_number: 0 },
+        to_block: { block_number: 20 },
+        chunk_size: 100,
+      },
+    ]);
+
+    await iterator.return?.(undefined);
+  });
 });
 
 type JsonRpcRequest = {
@@ -775,14 +836,20 @@ function eventNotification(subscriptionId: string, event: RpcEvent) {
   };
 }
 
-function mockRpcFetch(handler: (request: JsonRpcRequest) => unknown): void {
+function mockRpcFetch(
+  handler: (request: JsonRpcRequest) => unknown | Promise<unknown>,
+): void {
   vi.stubGlobal(
     "fetch",
     vi.fn(async (_url: string, init?: RequestInit) => {
       const request = JSON.parse(String(init?.body)) as JsonRpcRequest & {
         id?: number | string;
       };
-      const result = handler(request);
+      const result = await handler(request);
+
+      if (result instanceof Response) {
+        return result;
+      }
 
       return new Response(
         JSON.stringify({

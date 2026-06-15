@@ -3,6 +3,9 @@
   "version": "2.1.4",
   "repository": "apibara/typescript-sdk",
   "type": "module",
+  "engines": {
+    "node": ">=18"
+  },
   "files": [
     "dist",
     "src",
