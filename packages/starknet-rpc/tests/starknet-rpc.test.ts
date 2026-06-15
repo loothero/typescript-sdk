@@ -429,6 +429,16 @@ describe("WebSocket subscriptions", () => {
 });
 
 describe("combined stream", () => {
+  it("rejects bounded toBlock options", async () => {
+    const iterator = streamEvents({
+      url: RPC_URL,
+      wsUrl: WS_URL,
+      toBlock: { block_number: 10 },
+    } as never);
+
+    await expect(iterator.next()).rejects.toThrow(/toBlock/);
+  });
+
   it("dedupes the inclusive HTTP-to-WS handoff", async () => {
     const sockets: MockWebSocket[] = [];
     mockRpcFetch((request) => {
@@ -503,6 +513,90 @@ describe("combined stream", () => {
 
     await iterator.return?.(undefined);
   });
+
+  it("catches up over HTTP when the WS handoff block is too old", async () => {
+    const sockets: MockWebSocket[] = [];
+    const eventRequests: Array<Record<string, unknown>> = [];
+    let latestCalls = 0;
+
+    mockRpcFetch((request) => {
+      if (request.method === "starknet_getBlockWithTxHashes") {
+        latestCalls += 1;
+        const blockNumber = latestCalls === 1 ? 10 : 12;
+        return {
+          block_hash: `0x${blockNumber.toString(16)}`,
+          block_number: blockNumber,
+          timestamp: 100 + blockNumber,
+          transactions: [],
+        };
+      }
+
+      if (request.method === "starknet_getEvents") {
+        const filter = singleParam(request);
+        eventRequests.push(filter);
+
+        if (
+          isBlockNumberParam(filter.to_block) &&
+          filter.to_block.block_number === 12
+        ) {
+          return {
+            events: [rawEvent({ blockNumber: 11, transactionHash: "0x11" })],
+          };
+        }
+
+        return { events: [] };
+      }
+
+      throw new Error(`unexpected method ${request.method}`);
+    });
+
+    const iterator = streamEvents({
+      url: RPC_URL,
+      wsUrl: WS_URL,
+      fromBlock: { block_number: 0 },
+      webSocketFactory: mockWebSocketFactory(sockets),
+    });
+
+    const next = iterator.next();
+    const socket = await waitForSocket(sockets, 0);
+    socket.open();
+    const subscribe = await waitForSent(socket, "starknet_subscribeEvents");
+    expect((subscribe.params as { block_id: unknown }).block_id).toEqual({
+      block_number: 10,
+    });
+    socket.message({
+      jsonrpc: "2.0",
+      id: 1,
+      error: {
+        code: 68,
+        message: "Cannot go back more than 1024 blocks",
+      },
+    });
+
+    await expect(next).resolves.toMatchObject({
+      done: false,
+      value: {
+        type: "event",
+        cursor: {
+          blockNumber: 11,
+        },
+      },
+    });
+    expect(eventRequests).toEqual([
+      {
+        from_block: { block_number: 0 },
+        to_block: { block_number: 10 },
+        chunk_size: 100,
+      },
+      {
+        from_block: { block_number: 10 },
+        to_block: { block_number: 12 },
+        chunk_size: 100,
+      },
+    ]);
+
+    await iterator.return?.(undefined);
+  });
 });
 
 type JsonRpcRequest = {
@@ -522,6 +616,10 @@ function singleParam(request: JsonRpcRequest): Record<string, unknown> {
   }
 
   return param as Record<string, unknown>;
+}
+
+function isBlockNumberParam(value: unknown): value is { block_number: number } {
+  return typeof value === "object" && value !== null && "block_number" in value;
 }
 
 function cursor(

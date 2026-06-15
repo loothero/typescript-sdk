@@ -125,10 +125,11 @@ export interface EventSubscription extends AsyncIterable<StreamMessage> {
   unsubscribe(): Promise<void>;
 }
 
-export interface StreamEventsOptions extends EventFilter {
+export interface StreamEventsOptions extends Omit<EventFilter, "toBlock"> {
   url: string;
   wsUrl: string;
   cursor?: EventCursor;
+  /** Applies to the live WebSocket subscription. Historical backfill uses accepted events. */
   finalityStatus?: FinalityStatus;
   signal?: AbortSignal;
   webSocketFactory?: WebSocketFactory;
