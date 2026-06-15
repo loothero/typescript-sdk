@@ -5,6 +5,7 @@ import { compareEventCursor, eventCursorKey } from "../src/cursor";
 import { getEvents } from "../src/http";
 import { normalizeEvent, normalizeFelt } from "../src/normalize";
 import { streamEvents } from "../src/stream";
+import { StarknetRpcStream } from "../src/stream-config";
 import { subscribeEvents } from "../src/subscribe";
 import type { EventCursor, RpcEvent } from "../src/types";
 import { TooManyBlocksBackError, connectSubscribeEvents } from "../src/ws";
@@ -310,6 +311,143 @@ describe("HTTP backfill", () => {
   });
 });
 
+describe("RPC stream config", () => {
+  it("fetches accepted event blocks for the Apibara RPC client path", async () => {
+    const requests: JsonRpcRequest[] = [];
+    mockRpcFetch((request) => {
+      requests.push(request);
+
+      if (request.method === "starknet_getEvents") {
+        return {
+          events: [
+            rawEvent({ blockNumber: 1, transactionHash: "0x1" }),
+            rawEvent({
+              blockNumber: 2,
+              transactionHash: "0x2",
+              transactionIndex: 1,
+            }),
+          ],
+        };
+      }
+
+      if (request.method === "starknet_getBlockWithTxHashes") {
+        const blockId = request.params?.[0];
+        const blockNumber = isBlockNumberParam(blockId)
+          ? blockId.block_number
+          : 0;
+        return rpcBlock(blockNumber);
+      }
+
+      throw new Error(`unexpected method ${request.method}`);
+    });
+
+    const stream = new StarknetRpcStream({ url: RPC_URL });
+    const result = await stream.fetchBlockRange({
+      startBlock: 1n,
+      maxBlock: 2n,
+      force: false,
+      clampAllowed: false,
+      filter: {},
+    });
+
+    expect(result.data).toHaveLength(2);
+    expect(result.data[0]).toMatchObject({
+      endCursor: {
+        orderKey: 1n,
+        uniqueKey: normalizeFelt("0x1"),
+      },
+      block: {
+        header: {
+          blockNumber: 1,
+          blockHash: normalizeFelt("0x1"),
+          parentBlockHash: normalizeFelt("0x0"),
+        },
+        events: [
+          {
+            transactionHash: normalizeFelt("0x1"),
+          },
+        ],
+      },
+    });
+    expect(result.data[1]).toMatchObject({
+      endCursor: {
+        orderKey: 2n,
+        uniqueKey: normalizeFelt("0x2"),
+      },
+      block: {
+        events: [
+          {
+            transactionHash: normalizeFelt("0x2"),
+          },
+        ],
+      },
+    });
+    expect(
+      requests.filter((request) => request.method === "starknet_getEvents"),
+    ).toHaveLength(1);
+  });
+
+  it("maps finalized cursor requests to l1_accepted", async () => {
+    const requests: JsonRpcRequest[] = [];
+    mockRpcFetch((request) => {
+      requests.push(request);
+      return rpcBlock(10);
+    });
+
+    const stream = new StarknetRpcStream({ url: RPC_URL });
+    await expect(
+      stream.fetchCursor({ blockTag: "finalized" }),
+    ).resolves.toEqual({
+      blockNumber: 10n,
+      blockHash: normalizeFelt("0xa"),
+      parentBlockHash: normalizeFelt("0x9"),
+    });
+    expect(requests[0].params).toEqual(["l1_accepted"]);
+  });
+
+  it("clamps accepted event backfill ranges when allowed", async () => {
+    const requests: JsonRpcRequest[] = [];
+    mockRpcFetch((request) => {
+      requests.push(request);
+
+      if (request.method === "starknet_getEvents") {
+        return { events: [] };
+      }
+
+      if (request.method === "starknet_getBlockWithTxHashes") {
+        const blockId = request.params?.[0];
+        const blockNumber = isBlockNumberParam(blockId)
+          ? blockId.block_number
+          : 0;
+        return rpcBlock(blockNumber);
+      }
+
+      throw new Error(`unexpected method ${request.method}`);
+    });
+
+    const stream = new StarknetRpcStream({
+      url: RPC_URL,
+      getEventsRangeSize: 3n,
+    });
+    const result = await stream.fetchBlockRange({
+      startBlock: 1n,
+      maxBlock: 10n,
+      force: true,
+      clampAllowed: true,
+      filter: {},
+    });
+
+    expect(result.endBlock).toBe(3n);
+    const getEventsRequest = requests.find(
+      (request) => request.method === "starknet_getEvents",
+    );
+    expect(getEventsRequest).toBeDefined();
+    expect(singleParam(getEventsRequest!).to_block).toEqual({
+      block_number: 3,
+    });
+  });
+});
+
 describe("WebSocket subscriptions", () => {
   it("subscribes to pre-confirmed events by default", async () => {
     const sockets: MockWebSocket[] = [];
@@ -475,6 +613,108 @@ describe("WebSocket subscriptions", () => {
     await subscription.unsubscribe();
   });
 
+  it("emits repeated event identities when finality changes", async () => {
+    const sockets: MockWebSocket[] = [];
+    const subscription = subscribeEvents({
+      url: WS_URL,
+      blockId: { block_number: 1 },
+      webSocketFactory: mockWebSocketFactory(sockets),
+    });
+    const iterator = subscription[Symbol.asyncIterator]();
+
+    const first = iterator.next();
+    const socket = await waitForSocket(sockets, 0);
+    socket.open();
+    await waitForSent(socket, "starknet_subscribeEvents");
+    socket.message({ jsonrpc: "2.0", id: 1, result: "sub-1" });
+    socket.message(
+      eventNotification(
+        "sub-1",
+        rawEvent({
+          blockNumber: 1,
+          blockHash: undefined,
+          transactionHash: "0x1",
+          finalityStatus: "PRE_CONFIRMED",
+        }),
+      ),
+    );
+
+    await expect(first).resolves.toMatchObject({
+      done: false,
+      value: {
+        type: "event",
+        cursor: {
+          blockNumber: 1,
+          transactionHash: normalizeFelt("0x1"),
+        },
+        event: {
+          blockHash: undefined,
+          finalityStatus: "PRE_CONFIRMED",
+        },
+      },
+    });
+
+    const accepted = iterator.next();
+    socket.message(
+      eventNotification(
+        "sub-1",
+        rawEvent({
+          blockNumber: 1,
+          blockHash: "0xabc",
+          transactionHash: "0x1",
+          finalityStatus: "ACCEPTED_ON_L2",
+        }),
+      ),
+    );
+
+    await expect(accepted).resolves.toMatchObject({
+      done: false,
+      value: {
+        type: "event",
+        cursor: {
+          blockNumber: 1,
+          transactionHash: normalizeFelt("0x1"),
+        },
+        event: {
+          blockHash: normalizeFelt("0xabc"),
+          finalityStatus: "ACCEPTED_ON_L2",
+        },
+      },
+    });
+
+    const next = iterator.next();
+    socket.message(
+      eventNotification(
+        "sub-1",
+        rawEvent({
+          blockNumber: 1,
+          blockHash: "0xabc",
+          transactionHash: "0x1",
+          finalityStatus: "ACCEPTED_ON_L2",
+        }),
+      ),
+    );
+    socket.message(
+      eventNotification(
+        "sub-1",
+        rawEvent({ blockNumber: 2, transactionHash: "0x2" }),
+      ),
+    );
+
+    await expect(next).resolves.toMatchObject({
+      done: false,
+      value: {
+        type: "event",
+        cursor: {
+          blockNumber: 2,
+          transactionHash: normalizeFelt("0x2"),
+        },
+      },
+    });
+
+    await subscription.unsubscribe();
+  });
+
   it("surfaces TooManyBlocksBack without trying historical WS backfill", async () => {
     const sockets: MockWebSocket[] = [];
     const iterator = connectSubscribeEvents({
@@ -613,6 +853,95 @@ describe("combined stream", () => {
         type: "event",
         cursor: {
           blockNumber: 11,
+        },
+      },
+    });
+
+    await iterator.return?.(undefined);
+  });
+
+  it("emits live finality updates for the same event identity", async () => {
+    const sockets: MockWebSocket[] = [];
+    mockRpcFetch((request) => {
+      if (request.method === "starknet_getBlockWithTxHashes") {
+        return {
+          block_hash: "0x123",
+          block_number: 10,
+          timestamp: 100,
+          transactions: [],
+        };
+      }
+
+      if (request.method === "starknet_getEvents") {
+        return { events: [] };
+      }
+
+      throw new Error(`unexpected method ${request.method}`);
+    });
+
+    const iterator = streamEvents({
+      url: RPC_URL,
+      wsUrl: WS_URL,
+      fromBlock: { block_number: 10 },
+      webSocketFactory: mockWebSocketFactory(sockets),
+    });
+
+    const first = iterator.next();
+    const socket = await waitForSocket(sockets, 0);
+    socket.open();
+    await waitForSent(socket, "starknet_subscribeEvents");
+    socket.message({ jsonrpc: "2.0", id: 1, result: "sub-1" });
+    socket.message(
+      eventNotification(
+        "sub-1",
+        rawEvent({
+          blockNumber: 11,
+          blockHash: undefined,
+          transactionHash: "0x11",
+          finalityStatus: "PRE_CONFIRMED",
+        }),
+      ),
+    );
+
+    await expect(first).resolves.toMatchObject({
+      done: false,
+      value: {
+        type: "event",
+        cursor: {
+          blockNumber: 11,
+          transactionHash: normalizeFelt("0x11"),
+        },
+        event: {
+          blockHash: undefined,
+          finalityStatus: "PRE_CONFIRMED",
+        },
+      },
+    });
+
+    const accepted = iterator.next();
+    socket.message(
+      eventNotification(
+        "sub-1",
+        rawEvent({
+          blockNumber: 11,
+          blockHash: "0xabc",
+          transactionHash: "0x11",
+          finalityStatus: "ACCEPTED_ON_L2",
+        }),
+      ),
+    );
+
+    await expect(accepted).resolves.toMatchObject({
+      done: false,
+      value: {
+        type: "event",
+        cursor: {
+          blockNumber: 11,
+          transactionHash: normalizeFelt("0x11"),
+        },
+        event: {
+          blockHash: normalizeFelt("0xabc"),
+          finalityStatus: "ACCEPTED_ON_L2",
         },
       },
     });
@@ -1006,7 +1335,7 @@ describe("combined stream", () => {
 
 type JsonRpcRequest = {
   method: string;
-  params: unknown;
+  params?: unknown[];
 };
 
 function singleParam(request: JsonRpcRequest): Record<string, unknown> {
@@ -1027,6 +1356,17 @@ function isBlockNumberParam(value: unknown): value is { block_number: number } {
   return typeof value === "object" && value !== null && "block_number" in value;
 }
 
+function rpcBlock(blockNumber: number) {
+  const parentBlockNumber = Math.max(0, blockNumber - 1);
+  return {
+    block_hash: `0x${blockNumber.toString(16)}`,
+    parent_hash: `0x${parentBlockNumber.toString(16)}`,
+    block_number: blockNumber,
+    timestamp: 100 + blockNumber,
+    transactions: [],
+  };
+}
+
 function cursor(
   blockNumber: number,
   transactionHash = "0x1",
@@ -1038,7 +1378,7 @@ function cursor(
 
 function rawEvent({
   blockNumber = 1,
-  blockHash = "0xabc",
+  blockHash,
   transactionHash = "0x1",
   transactionIndex = 0,
   eventIndex = 0,
@@ -1057,9 +1397,8 @@ function rawEvent({
   data?: string[];
   finalityStatus?: RpcEvent["finality_status"];
 } = {}): RpcEvent {
-  return {
+  const event: RpcEvent = {
     block_number: blockNumber,
-    block_hash: blockHash,
     transaction_hash: transactionHash,
     transaction_index: transactionIndex,
     event_index: eventIndex,
@@ -1068,6 +1407,12 @@ function rawEvent({
     data,
     finality_status: finalityStatus,
   };
+
+  if (blockHash !== undefined) {
+    event.block_hash = blockHash;
+  }
+
+  return event;
 }
 
 function eventNotification(subscriptionId: string, event: RpcEvent) {

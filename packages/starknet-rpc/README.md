@@ -135,6 +135,62 @@ JSON-RPC errors are surfaced to the caller. Direct `getEvents` and
 `backfillEvents` calls do not add a global rate limiter; callers indexing large
 histories should choose a node and `chunkSize` appropriate for their rate limits.
 
+## Apibara RPC Stream
+
+`StarknetRpcStream` implements the same `RpcStreamConfig` shape used by
+`@apibara/evm-rpc`:
+
+```ts
+import { createRpcClient } from "@apibara/protocol/rpc";
+import { StarknetRpcStream } from "@apibara/starknet-rpc";
+
+const client = createRpcClient(
+  new StarknetRpcStream({
+    url: process.env.STARKNET_RPC_URL!,
+    getEventsRangeSize: 1_000n,
+    headRefreshIntervalMs: 1_000,
+  }),
+);
+
+for await (const message of client.streamData({
+  filter: [
+    {
+      addresses: ["0x1234"],
+      keys: [["0xabcdef"]],
+    },
+  ],
+  startingCursor: { orderKey: 0n },
+})) {
+  // message.data.data contains event-focused StarknetRpcBlock values.
+}
+```
+
+This adapter is for accepted event blocks fetched over HTTP. Use `streamEvents`
+when the indexer needs the low-latency pre-confirmed WebSocket path.
+
+Apibara CLI indexers can use the adapter without a DNA `streamUrl`:
+
+```ts
+import { defineIndexer } from "apibara/indexer";
+import { StarknetRpcStream } from "@apibara/starknet-rpc";
+
+export default defineIndexer(
+  new StarknetRpcStream({
+    url: process.env.STARKNET_RPC_URL!,
+  }),
+)({
+  filter: {
+    addresses: ["0x1234"],
+    keys: [["0xabcdef"]],
+  },
+  async transform({ block }) {
+    for (const event of block.events) {
+      // Persist accepted events.
+    }
+  },
+});
+```
+
 ## Cursor Contract
 
 Persist the cursor in the same transaction as the indexed rows derived from the
@@ -173,6 +229,11 @@ cursor finality is unknown and the live stream uses `PRE_CONFIRMED`,
 and replays that block over HTTP before returning to WebSocket live indexing.
 This prevents a missed reorg from skipping replacement events that share the
 same `block_number + transaction_index + event_index` ordering.
+
+Pre-confirmed subscriptions may deliver the same stable event identity again
+when finality or `block_hash` changes. The subscription helpers dedupe exact
+replays, but they emit these finality updates so callers can update the
+persisted row and cursor finality.
 
 ## Schema Recommendations
 

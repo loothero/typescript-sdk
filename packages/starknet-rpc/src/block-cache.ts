@@ -4,6 +4,7 @@ import type { BlockCacheOptions, BlockId, BlockMetadata, Felt } from "./types";
 
 export interface StarknetBlockWithTxHashes {
   block_hash?: Felt;
+  parent_hash?: Felt;
   block_number?: number;
   timestamp?: number;
   transactions?: Felt[];

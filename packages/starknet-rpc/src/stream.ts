@@ -4,6 +4,8 @@ import { DEFAULT_SUBSCRIPTION_FINALITY_STATUS } from "./constants";
 import {
   compareEventCursor,
   cursorBeforeBlock,
+  eventCursorKey,
+  eventVersionKey,
   isCursorBeforeBlock,
 } from "./cursor";
 import { StarknetTransportError } from "./http";
@@ -42,6 +44,7 @@ export async function* streamEvents(
   let httpRetryAttempt = 0;
   let subscription: EventSubscription | undefined;
   let initialCursorRollbackPending = shouldReplayInitialCursorBlock(options);
+  const seenEvents = new RememberedEventVersions(2_048);
 
   try {
     while (true) {
@@ -112,6 +115,10 @@ export async function* streamEvents(
 
               lastYieldedCursor = message.cursor;
               lastRealCursor = message.cursor;
+              seenEvents.remember(
+                eventCursorKey(message.cursor),
+                eventVersionKey(message.event),
+              );
             }
 
             yield message;
@@ -156,6 +163,7 @@ export async function* streamEvents(
       const subscriptionState = {
         lastYieldedCursor,
         lastRealCursor,
+        seenEvents,
       };
       let reorg: ReorgMessage | undefined;
 
@@ -201,6 +209,7 @@ export async function* streamEvents(
         rollbackCursor,
       };
       blockCache.invalidateFrom(startingBlockNumber);
+      seenEvents.clear();
       lastYieldedCursor = rollbackCursor;
       lastRealCursor = undefined;
       lastBackfilledBlockNumber = undefined;
@@ -221,6 +230,7 @@ async function* yieldFromSubscription(
   state: {
     lastYieldedCursor: EventCursor | undefined;
     lastRealCursor: EventCursor | undefined;
+    seenEvents: RememberedEventVersions;
   },
 ): AsyncGenerator<StreamMessage, ReorgMessage | undefined> {
   for await (const message of subscription) {
@@ -229,12 +239,23 @@ async function* yieldFromSubscription(
       return message;
     }
 
-    if (!shouldYieldEvent(message.cursor, state.lastYieldedCursor)) {
+    const key = eventCursorKey(message.cursor);
+    const version = eventVersionKey(message.event);
+    if (
+      !shouldYieldEventVersion(
+        message.cursor,
+        key,
+        version,
+        state.lastYieldedCursor,
+        state.seenEvents,
+      )
+    ) {
       continue;
     }
 
     state.lastYieldedCursor = message.cursor;
     state.lastRealCursor = message.cursor;
+    state.seenEvents.remember(key, version);
     yield message;
   }
 
@@ -248,6 +269,23 @@ function shouldYieldEvent(
   return (
     lastYieldedCursor === undefined ||
     compareEventCursor(cursor, lastYieldedCursor) > 0
+  );
+}
+
+function shouldYieldEventVersion(
+  cursor: EventCursor,
+  key: string,
+  version: string,
+  lastYieldedCursor: EventCursor | undefined,
+  seenEvents: RememberedEventVersions,
+): boolean {
+  if (seenEvents.has(key, version)) {
+    return false;
+  }
+
+  return (
+    lastYieldedCursor === undefined ||
+    compareEventCursor(cursor, lastYieldedCursor) >= 0
   );
 }
 
@@ -304,6 +342,47 @@ function syntheticReorgMessage(
     },
     rollbackCursor: cursorBeforeBlock(startingBlockNumber),
   };
+}
+
+class RememberedEventVersions {
+  private readonly versions = new Map<string, Set<string>>();
+  private readonly order: string[] = [];
+
+  constructor(private readonly maxSize: number) {}
+
+  has(key: string, version: string): boolean {
+    return this.versions.get(key)?.has(version) ?? false;
+  }
+
+  remember(key: string, version: string): void {
+    const versions = this.versions.get(key) ?? new Set<string>();
+    if (versions.has(version)) {
+      return;
+    }
+
+    versions.add(version);
+    this.versions.set(key, versions);
+    this.order.push(`${key}\0${version}`);
+
+    while (this.order.length > this.maxSize) {
+      const oldest = this.order.shift();
+      if (!oldest) {
+        continue;
+      }
+
+      const [oldestKey, oldestVersion] = oldest.split("\0", 2);
+      const oldestVersions = this.versions.get(oldestKey);
+      oldestVersions?.delete(oldestVersion);
+      if (oldestVersions?.size === 0) {
+        this.versions.delete(oldestKey);
+      }
+    }
+  }
+
+  clear(): void {
+    this.versions.clear();
+    this.order.length = 0;
+  }
 }
 
 function rejectUnsupportedOptions(options: StreamEventsOptions): void {

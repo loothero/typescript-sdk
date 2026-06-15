@@ -1,5 +1,5 @@
 import { normalizeFelt } from "./normalize";
-import type { EventCursor } from "./types";
+import type { EventCursor, NormalizedEvent } from "./types";
 
 export function compareEventCursor(a: EventCursor, b: EventCursor): number {
   if (a.blockNumber !== b.blockNumber) {
@@ -26,6 +26,16 @@ export function eventCursorKey(cursor: EventCursor): string {
     cursor.blockNumber,
     normalizeFelt(cursor.transactionHash, "cursor.transactionHash"),
     cursor.eventIndex,
+  ].join(":");
+}
+
+export function eventVersionKey(event: NormalizedEvent): string {
+  return [
+    event.finalityStatus ?? "",
+    event.blockHash ?? "",
+    event.fromAddress,
+    event.keys.join(","),
+    event.data.join(","),
   ].join(":");
 }
 

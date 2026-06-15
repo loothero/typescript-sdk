@@ -24,6 +24,13 @@ export {
   normalizeReorg,
 } from "./normalize";
 export { streamEvents } from "./stream";
+export { StarknetRpcStream } from "./stream-config";
+export type {
+  StarknetRpcBlock,
+  StarknetRpcBlockHeader,
+  StarknetRpcStreamFilter,
+  StarknetRpcStreamOptions,
+} from "./stream-config";
 export { subscribeEvents } from "./subscribe";
 export {
   TooManyBlocksBackError,

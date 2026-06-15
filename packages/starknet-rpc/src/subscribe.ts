@@ -1,5 +1,5 @@
 import { DEFAULT_SUBSCRIPTION_FINALITY_STATUS } from "./constants";
-import { compareEventCursor, cursorEquals, eventCursorKey } from "./cursor";
+import { compareEventCursor, eventCursorKey, eventVersionKey } from "./cursor";
 import { normalizeFelt } from "./normalize";
 import type {
   EventCursor,
@@ -79,14 +79,10 @@ async function* subscribeWithReconnect({
   isUnsubscribed: () => boolean;
 }): AsyncGenerator<StreamMessage> {
   const reconnect = normalizeReconnectConfig(options.reconnect);
-  const seenCursorKeys = new RememberedCursorKeys(MAX_REMEMBERED_CURSOR_KEYS);
+  const seenEvents = new RememberedEventVersions(MAX_REMEMBERED_CURSOR_KEYS);
   let lastCursor = options.cursor;
   let blockId = initialBlockId(options);
   let attempt = 0;
-
-  if (lastCursor) {
-    seenCursorKeys.remember(eventCursorKey(lastCursor));
-  }
 
   while (!signal.aborted && !isUnsubscribed()) {
     let yieldedMessage = false;
@@ -105,7 +101,7 @@ async function* subscribeWithReconnect({
             lastCursor.blockNumber >= message.reorg.startingBlockNumber
           ) {
             lastCursor = undefined;
-            seenCursorKeys.clear();
+            seenEvents.clear();
           }
 
           blockId = { block_number: message.reorg.startingBlockNumber };
@@ -116,13 +112,16 @@ async function* subscribeWithReconnect({
         }
 
         const key = eventCursorKey(message.cursor);
-        if (shouldSkipEvent(message.cursor, key, lastCursor, seenCursorKeys)) {
+        const version = eventVersionKey(message.event);
+        if (
+          shouldSkipEvent(message.cursor, key, version, lastCursor, seenEvents)
+        ) {
           continue;
         }
 
         lastCursor = message.cursor;
         blockId = { block_number: message.cursor.blockNumber };
-        seenCursorKeys.remember(key);
+        seenEvents.remember(key, version);
         yieldedMessage = true;
         attempt = 0;
         yield message;
@@ -210,19 +209,16 @@ function normalizeFelts(values?: Felt[]): Felt[] | undefined {
 function shouldSkipEvent(
   cursor: EventCursor,
   key: string,
+  version: string,
   lastCursor: EventCursor | undefined,
-  seenCursorKeys: RememberedCursorKeys,
+  seenEvents: RememberedEventVersions,
 ): boolean {
-  if (seenCursorKeys.has(key)) {
+  if (seenEvents.has(key, version)) {
     return true;
   }
 
   if (!lastCursor) {
     return false;
-  }
-
-  if (cursorEquals(cursor, lastCursor)) {
-    return true;
   }
 
   return compareEventCursor(cursor, lastCursor) < 0;
@@ -298,34 +294,41 @@ async function waitForReconnect(
   });
 }
 
-class RememberedCursorKeys {
-  private readonly keys = new Set<string>();
+class RememberedEventVersions {
+  private readonly versions = new Map<string, Set<string>>();
   private readonly order: string[] = [];
 
   constructor(private readonly maxSize: number) {}
 
-  has(key: string): boolean {
-    return this.keys.has(key);
+  has(key: string, version: string): boolean {
+    return this.versions.get(key)?.has(version) ?? false;
   }
 
-  remember(key: string): void {
-    if (this.keys.has(key)) {
+  remember(key: string, version: string): void {
+    const versions = this.versions.get(key) ?? new Set<string>();
+    if (versions.has(version)) {
       return;
     }
 
-    this.keys.add(key);
-    this.order.push(key);
+    versions.add(version);
+    this.versions.set(key, versions);
+    this.order.push(`${key}\0${version}`);
 
     while (this.order.length > this.maxSize) {
       const oldest = this.order.shift();
       if (oldest) {
-        this.keys.delete(oldest);
+        const [oldestKey, oldestVersion] = oldest.split("\0", 2);
+        const oldestVersions = this.versions.get(oldestKey);
+        oldestVersions?.delete(oldestVersion);
+        if (oldestVersions?.size === 0) {
+          this.versions.delete(oldestKey);
+        }
       }
     }
   }
 
   clear(): void {
-    this.keys.clear();
+    this.versions.clear();
     this.order.length = 0;
   }
 }
