@@ -117,8 +117,7 @@ export type HandlerArgs<TBlock> = {
   abortSignal?: AbortSignal;
 };
 
-export type IndexerConfig<TFilter, TBlock> = {
-  streamUrl?: string;
+export type BaseIndexerConfig<TFilter, TBlock> = {
   filter: TFilter;
   finality?: DataFinality;
   clientOptions?: CreateClientOptions;
@@ -131,35 +130,60 @@ export type IndexerConfig<TFilter, TBlock> = {
   debug?: boolean;
 } & IndexerStartingCursor;
 
+export type IndexerConfig<TFilter, TBlock> = BaseIndexerConfig<
+  TFilter,
+  TBlock
+> & {
+  streamUrl: string;
+};
+
+export type RpcIndexerConfig<TFilter, TBlock> = BaseIndexerConfig<
+  TFilter,
+  TBlock
+> & {
+  streamUrl?: string;
+};
+
 export type IndexerStreamConfig<TFilter, TBlock> =
   | StreamConfig<TFilter, TBlock>
   | RpcStreamConfig<TFilter, TBlock>;
 
-export type IndexerWithStreamConfig<TFilter, TBlock> = IndexerConfig<
+export type IndexerWithDnaStreamConfig<TFilter, TBlock> = IndexerConfig<
   TFilter,
   TBlock
 > & {
-  streamConfig: IndexerStreamConfig<TFilter, TBlock>;
+  streamConfig: StreamConfig<TFilter, TBlock>;
 };
+
+export type IndexerWithRpcStreamConfig<TFilter, TBlock> = RpcIndexerConfig<
+  TFilter,
+  TBlock
+> & {
+  streamConfig: RpcStreamConfig<TFilter, TBlock>;
+};
+
+export type IndexerWithStreamConfig<TFilter, TBlock> =
+  | IndexerWithDnaStreamConfig<TFilter, TBlock>
+  | IndexerWithRpcStreamConfig<TFilter, TBlock>;
 
 export function defineIndexer<TFilter, TBlock>(
   streamConfig: StreamConfig<TFilter, TBlock>,
 ): (
-  config: IndexerConfig<TFilter, TBlock> & { streamUrl: string },
-) => IndexerWithStreamConfig<TFilter, TBlock>;
+  config: IndexerConfig<TFilter, TBlock>,
+) => IndexerWithDnaStreamConfig<TFilter, TBlock>;
 
 export function defineIndexer<TFilter, TBlock>(
   streamConfig: RpcStreamConfig<TFilter, TBlock>,
 ): (
-  config: IndexerConfig<TFilter, TBlock>,
-) => IndexerWithStreamConfig<TFilter, TBlock>;
+  config: RpcIndexerConfig<TFilter, TBlock>,
+) => IndexerWithRpcStreamConfig<TFilter, TBlock>;
 
 export function defineIndexer<TFilter, TBlock>(
   streamConfig: IndexerStreamConfig<TFilter, TBlock>,
-) {
+): unknown {
   return (
-    config: IndexerConfig<TFilter, TBlock>,
-  ): IndexerWithStreamConfig<TFilter, TBlock> => ({
+    config: IndexerConfig<TFilter, TBlock> | RpcIndexerConfig<TFilter, TBlock>,
+  ) => ({
     streamConfig,
     ...config,
   });
@@ -167,7 +191,7 @@ export function defineIndexer<TFilter, TBlock>(
 
 export interface Indexer<TFilter, TBlock> {
   streamConfig: IndexerStreamConfig<TFilter, TBlock>;
-  options: IndexerConfig<TFilter, TBlock>;
+  options: IndexerConfig<TFilter, TBlock> | RpcIndexerConfig<TFilter, TBlock>;
   hooks: Hookable<IndexerHooks<TFilter, TBlock>>;
 }
 
